@@ -27,3 +27,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local tool config
+.claude/
+
+# Supabase CLI cache
+supabase/.temp/
+
+# Internal/school artifacts
+Web_System_Software_Progress_Test_Cases.docx
+Web_System_Software_Progress_Test_Cases.md

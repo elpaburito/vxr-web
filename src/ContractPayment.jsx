@@ -1,46 +1,128 @@
-import { useState, useEffect, useMemo } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Home, Bell, ArrowLeft, Lock, CreditCard, ShieldCheck,
-  Check, AlertCircle, Loader2, FileText, Download,
+  Check, AlertCircle, Loader2, FileText,
 } from "lucide-react";
+import {
+  Elements, PaymentElement, useStripe, useElements,
+} from "@stripe/react-stripe-js";
 import ProfileDropdown from "./components/ProfileDropdown.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import {
-  loadContract, saveContract, getContractStatus, CONTRACT_TYPES,
-} from "./lib/contractStorage";
+  fetchContractById, getContractStatus, CONTRACT_TYPES,
+  normalizeContract, updateContract,
+} from "./lib/contractsService";
+import {
+  createStripePaymentIntent, recordStripePayment,
+} from "./lib/paymentsService";
+import { getStripePromise, isStripeConfigured } from "./lib/stripe";
+
+// Stripe.js loader is module-scoped: loadStripe() must be called once
+// per page load. getStripePromise memoizes it for us.
+const stripePromise = getStripePromise();
 
 export default function ContractPayment() {
   const navigate = useNavigate();
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
   const { user, profile, isAuthenticated } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
-  const [contract, setContract] = useState(() => loadContract(id));
-  const [step, setStep] = useState(() => {
-    const c = loadContract(id);
-    return c?.payment ? "success" : "form";
-  });
-  const [card, setCard] = useState({ number: "", expiry: "", cvc: "", name: "", postal: "" });
-  const [focused, setFocused] = useState(null);
-  const [error, setError] = useState(null);
+  const [contract, setContract] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [step, setStep] = useState("form"); // 'form' | 'processing' | 'success'
+  const [intent, setIntent] = useState(null);   // { clientSecret, paymentIntentId, amount }
+  const [intentError, setIntentError] = useState(null);
 
   const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
-  const status = getContractStatus(contract);
 
+  // ─── Load contract + self-heal zero amounts ────────────────────────────────
+  useEffect(() => {
+    if (!id) return;
+    setLoading(true);
+    fetchContractById(id).then(({ data, error }) => {
+      if (error || !data) { setLoading(false); return; }
+      const c = normalizeContract(data);
+
+      const fin = Array.isArray(data.listings?.listing_financials)
+        ? data.listings.listing_financials[0]
+        : data.listings?.listing_financials;
+      const listingRent    = Number(fin?.monthly_rent     ?? 0);
+      const listingDeposit = Number(fin?.security_deposit ?? 0);
+      const listingAdvance = Number(fin?.advance_payment  ?? 0);
+      if (listingRent > 0 && Number(c.monthlyRent) === 0) {
+        c.monthlyRent     = listingRent;
+        c.securityDeposit = listingDeposit > 0 ? listingDeposit : listingRent;
+        c.advanceRent     = listingAdvance > 0 ? listingAdvance : listingRent;
+        updateContract(id, {
+          monthly_rent:     c.monthlyRent,
+          security_deposit: c.securityDeposit,
+          advance_rent:     c.advanceRent,
+        }).catch(() => {});
+      }
+
+      setContract(c);
+      if (c.payment) setStep("success");
+      setLoading(false);
+    });
+  }, [id]);
+
+  const status = getContractStatus(contract);
   const total = useMemo(() => {
     if (!contract) return 0;
     return Number(contract.monthlyRent) + Number(contract.securityDeposit) + Number(contract.advanceRent);
   }, [contract]);
 
+  // ─── Ask the Edge Function for a PaymentIntent once we know who's paying ──
+  const isTenant = !!(user?.id && contract?.tenantId && user.id === contract.tenantId);
+  const eligibleForCheckout =
+    !!contract && isTenant && total > 0 && status !== "paid" && step !== "success";
+
   useEffect(() => {
-    if (contract) saveContract(id, contract);
-  }, [contract, id]);
+    if (!eligibleForCheckout) return;
+    let cancelled = false;
+    setIntentError(null);
+    createStripePaymentIntent(id).then((res) => {
+      if (cancelled) return;
+      if (res?.error) { setIntentError(res.error); return; }
+      setIntent(res);
+    });
+    return () => { cancelled = true; };
+  }, [id, eligibleForCheckout]);
+
+  // ─── Handle the redirect-back case (3DS / authorize-and-redirect) ─────────
+  // Stripe appends ?payment_intent=…&payment_intent_client_secret=…&redirect_status=…
+  useEffect(() => {
+    const piParam = searchParams.get("payment_intent");
+    const redirectStatus = searchParams.get("redirect_status");
+    if (!piParam || !contract) return;
+    if (redirectStatus === "succeeded") {
+      setStep("processing");
+      recordStripePayment(id, piParam).then((res) => {
+        if (res?.error) { setIntentError(res.error); setStep("form"); return; }
+        setContract((prev) => prev && {
+          ...prev,
+          payment: { transactionId: piParam, amount: total, paidAt: new Date().toISOString() },
+        });
+        setStep("success");
+      });
+    } else if (redirectStatus === "failed") {
+      setIntentError("Payment was not completed. Please try again.");
+    }
+  }, [searchParams, contract, id, total]);
+
+  // ─── Loading / guard rails ────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="w-full min-h-screen bg-[#F7F8FA] flex items-center justify-center text-gray-500">
+        <Loader2 className="animate-spin mr-2" size={18} /> Loading contract…
+      </div>
+    );
+  }
 
   if (!contract) {
-    return (
-      <NotFound onBack={() => navigate("/enlistment")} title="Contract not found" />
-    );
+    return <NotFound onBack={() => navigate("/enlistment")} title="Contract not found" />;
   }
 
   if (status === "draft" || status === "pending_landlord" || status === "pending_tenant") {
@@ -53,49 +135,37 @@ export default function ContractPayment() {
     );
   }
 
-  const validate = () => {
-    const digits = card.number.replace(/\D/g, "");
-    if (digits.length < 13 || digits.length > 19) return "Card number is invalid.";
-    if (!/^\d{2}\/\d{2}$/.test(card.expiry)) return "Expiry must be in MM/YY format.";
-    const [mm, yy] = card.expiry.split("/").map((n) => parseInt(n, 10));
-    if (mm < 1 || mm > 12) return "Expiry month is invalid.";
-    const now = new Date();
-    const expDate = new Date(2000 + yy, mm - 1, 1);
-    if (expDate < new Date(now.getFullYear(), now.getMonth(), 1)) return "Card has expired.";
-    if (!/^\d{3,4}$/.test(card.cvc)) return "CVC must be 3 or 4 digits.";
-    if (!card.name.trim()) return "Cardholder name is required.";
-    return null;
-  };
+  if (user?.id && contract.tenantId && user.id !== contract.tenantId) {
+    return (
+      <NotFound
+        onBack={() => navigate(`/contract/${id}`)}
+        title="Payment is the tenant's responsibility"
+        message="Only the tenant on this contract can complete the move-in payment. Ask them to sign in and pay."
+      />
+    );
+  }
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    const v = validate();
-    if (v) {
-      setError(v);
-      return;
-    }
-    setError(null);
-    setStep("processing");
-    setTimeout(() => {
-      const last4 = card.number.replace(/\D/g, "").slice(-4);
-      const transactionId = "pi_" + Math.random().toString(36).slice(2, 14).toUpperCase();
-      const updated = {
-        ...contract,
-        payment: {
-          amount: total,
-          method: detectBrand(card.number) ?? "card",
-          paidAt: new Date().toISOString(),
-          transactionId,
-          last4,
-          name: card.name,
-        },
-      };
-      saveContract(id, updated);
-      setContract(updated);
-      setStep("success");
-    }, 2200);
-  };
+  if (step !== "success" && total <= 0) {
+    return (
+      <NotFound
+        onBack={() => navigate(`/contract/${id}`)}
+        title="Contract has no rent amount set"
+        message="The contract is missing rent / deposit values. Ask the landlord to open the contract, edit the details, and save before you pay."
+      />
+    );
+  }
 
+  if (!isStripeConfigured() && step !== "success") {
+    return (
+      <NotFound
+        onBack={() => navigate(`/contract/${id}`)}
+        title="Payments are not configured"
+        message="VITE_STRIPE_PUBLISHABLE_KEY isn't set in this build. Add your Stripe publishable test key and redeploy."
+      />
+    );
+  }
+
+  // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="w-full min-h-screen bg-[#F7F8FA] flex flex-col">
       <Header
@@ -109,10 +179,14 @@ export default function ContractPayment() {
 
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 lg:px-6 py-8">
         {step === "success" ? (
-          <SuccessView contract={contract} onBack={() => navigate(`/contract/${id}`)} onHome={() => navigate("/home2")} />
+          <SuccessView
+            contract={contract}
+            total={total}
+            onBack={() => navigate(`/contract/${id}`)}
+            onHome={() => navigate("/home2")}
+          />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-6">
-            {/* Payment form */}
             <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8">
               <div className="flex items-start justify-between mb-6">
                 <div>
@@ -127,125 +201,50 @@ export default function ContractPayment() {
                 </div>
               </div>
 
-              {step === "processing" ? (
-                <ProcessingState />
-              ) : (
-                <form onSubmit={handleSubmit} className="space-y-5">
-                  {/* Card preview */}
-                  <CardPreview card={card} focused={focused} />
+              {step === "processing" && <ProcessingState />}
 
-                  <div>
-                    <Label>Cardholder name</Label>
-                    <input
-                      type="text"
-                      value={card.name}
-                      onChange={(e) => setCard({ ...card, name: e.target.value })}
-                      onFocus={() => setFocused("name")}
-                      onBlur={() => setFocused(null)}
-                      placeholder="Full name on card"
-                      autoComplete="cc-name"
-                      className={inputCls()}
-                    />
-                  </div>
+              {step === "form" && intentError && !intent && (
+                <ErrorBlock message={intentError} />
+              )}
 
-                  <div>
-                    <Label>Card number</Label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={card.number}
-                        onChange={(e) => setCard({ ...card, number: formatCardNumber(e.target.value) })}
-                        onFocus={() => setFocused("number")}
-                        onBlur={() => setFocused(null)}
-                        placeholder="1234 1234 1234 1234"
-                        autoComplete="cc-number"
-                        maxLength={23}
-                        className={inputCls("pl-11 pr-14 font-mono tracking-wider")}
-                      />
-                      <CreditCard size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <BrandTag brand={detectBrand(card.number)} />
-                    </div>
-                  </div>
+              {step === "form" && !intent && !intentError && (
+                <div className="py-12 flex flex-col items-center text-slate-500">
+                  <Loader2 className="animate-spin" size={28} />
+                  <p className="text-sm mt-3">Preparing secure checkout…</p>
+                </div>
+              )}
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label>Expiry (MM/YY)</Label>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={card.expiry}
-                        onChange={(e) => setCard({ ...card, expiry: formatExpiry(e.target.value) })}
-                        onFocus={() => setFocused("expiry")}
-                        onBlur={() => setFocused(null)}
-                        placeholder="MM/YY"
-                        autoComplete="cc-exp"
-                        maxLength={5}
-                        className={inputCls("font-mono tracking-wider")}
-                      />
-                    </div>
-                    <div>
-                      <Label>CVC</Label>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={card.cvc}
-                        onChange={(e) => setCard({ ...card, cvc: e.target.value.replace(/\D/g, "").slice(0, 4) })}
-                        onFocus={() => setFocused("cvc")}
-                        onBlur={() => setFocused(null)}
-                        placeholder="123"
-                        autoComplete="cc-csc"
-                        maxLength={4}
-                        className={inputCls("font-mono tracking-wider")}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <Label>Postal code (optional)</Label>
-                    <input
-                      type="text"
-                      value={card.postal}
-                      onChange={(e) => setCard({ ...card, postal: e.target.value })}
-                      onFocus={() => setFocused("postal")}
-                      onBlur={() => setFocused(null)}
-                      placeholder="e.g., 1200"
-                      autoComplete="postal-code"
-                      className={inputCls()}
-                    />
-                  </div>
-
-                  {error && (
-                    <div className="flex items-start gap-2 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
-                      <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
-                      <span>{error}</span>
-                    </div>
-                  )}
-
-                  <button
-                    type="submit"
-                    className="w-full h-12 rounded-lg text-white font-semibold transition hover:opacity-90 hover:shadow-lg flex items-center justify-center gap-2"
-                    style={{ background: "linear-gradient(135deg, #635BFF, #5046E5)" }}
-                  >
-                    <Lock size={14} />
-                    Pay PHP {total.toLocaleString()}.00
-                  </button>
-
-                  <div className="flex items-center justify-center gap-4 pt-2 text-[11px] text-slate-400">
-                    <span className="inline-flex items-center gap-1">
-                      <ShieldCheck size={11} />
-                      256-bit SSL
-                    </span>
-                    <span>·</span>
-                    <span>Powered by <span className="font-semibold text-slate-500">stripe</span></span>
-                    <span>·</span>
-                    <span>PCI DSS</span>
-                  </div>
-                </form>
+              {step === "form" && intent?.clientSecret && (
+                <Elements
+                  stripe={stripePromise}
+                  options={{
+                    clientSecret: intent.clientSecret,
+                    appearance: { theme: "stripe", variables: { colorPrimary: "#635BFF" } },
+                  }}
+                >
+                  <CheckoutForm
+                    contractId={id}
+                    paymentIntentId={intent.paymentIntentId}
+                    total={total}
+                    returnUrl={`${window.location.origin}/contract/${id}/pay`}
+                    onProcessing={() => setStep("processing")}
+                    onError={(msg) => { setIntentError(msg); setStep("form"); }}
+                    onSuccess={(piId) => {
+                      setContract((prev) => prev && {
+                        ...prev,
+                        payment: {
+                          transactionId: piId,
+                          amount: total,
+                          paidAt: new Date().toISOString(),
+                        },
+                      });
+                      setStep("success");
+                    }}
+                  />
+                </Elements>
               )}
             </section>
 
-            {/* Order summary */}
             <aside className="lg:sticky lg:top-24 self-start">
               <OrderSummary contract={contract} total={total} />
             </aside>
@@ -256,7 +255,109 @@ export default function ContractPayment() {
   );
 }
 
-// ============================================================================
+// ─── Stripe Elements form ─────────────────────────────────────────────────────
+
+function CheckoutForm({ contractId, paymentIntentId, total, returnUrl, onProcessing, onError, onSuccess }) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [submitting, setSubmitting] = useState(false);
+  const [localError, setLocalError] = useState(null);
+
+  const handleSubmit = useCallback(async (e) => {
+    e.preventDefault();
+    if (!stripe || !elements) return;
+    setSubmitting(true);
+    setLocalError(null);
+    // NOTE: do NOT flip the parent to "processing" here. That would
+    // unmount <Elements> (and the PaymentElement inside it) on the next
+    // render, and the elements.submit() / confirmPayment() calls below
+    // would then throw "elements should have a mounted Payment Element".
+    // The button's own spinner covers the in-flight UX; only flip the
+    // parent step once Stripe is done and we're hitting our backend.
+
+    // Validate Elements input first so we can render granular field
+    // errors before kicking off the network call.
+    const submitRes = await elements.submit();
+    if (submitRes?.error) {
+      const msg = submitRes.error.message ?? "Please check your card details.";
+      setLocalError(msg);
+      onError?.(msg);
+      setSubmitting(false);
+      return;
+    }
+
+    const { error, paymentIntent } = await stripe.confirmPayment({
+      elements,
+      confirmParams: { return_url: returnUrl },
+      redirect: "if_required",
+    });
+
+    if (error) {
+      const msg = error.message ?? "Payment failed.";
+      setLocalError(msg);
+      onError?.(msg);
+      setSubmitting(false);
+      return;
+    }
+
+    // Stripe is done — safe to unmount the form now and show the
+    // processing UI while we record the payment server-side.
+    onProcessing?.();
+    const piId = paymentIntent?.id ?? paymentIntentId;
+    const rec = await recordStripePayment(contractId, piId);
+    if (rec?.error) {
+      const msg = `Payment confirmed but recording failed: ${rec.error}`;
+      setLocalError(msg);
+      onError?.(msg);
+      setSubmitting(false);
+      return;
+    }
+
+    setSubmitting(false);
+    onSuccess?.(piId);
+  }, [stripe, elements, contractId, paymentIntentId, returnUrl, onProcessing, onError, onSuccess]);
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-5">
+      <PaymentElement options={{ layout: "tabs" }} />
+
+      {localError && <ErrorBlock message={localError} />}
+
+      <button
+        type="submit"
+        disabled={!stripe || submitting}
+        className="w-full h-12 rounded-lg text-white font-semibold transition hover:opacity-90 hover:shadow-lg flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+        style={{ background: "linear-gradient(135deg, #635BFF, #5046E5)" }}
+      >
+        {submitting
+          ? <><Loader2 size={14} className="animate-spin" /> Processing…</>
+          : <><Lock size={14} /> Pay PHP {total.toLocaleString()}.00</>}
+      </button>
+
+      <div className="flex items-center justify-center gap-4 pt-2 text-[11px] text-slate-400">
+        <span className="inline-flex items-center gap-1">
+          <ShieldCheck size={11} />
+          256-bit SSL
+        </span>
+        <span>·</span>
+        <span>Powered by <span className="font-semibold text-slate-500">Stripe</span></span>
+        <span>·</span>
+        <span>PCI DSS</span>
+      </div>
+    </form>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function ErrorBlock({ message }) {
+  return (
+    <div className="flex items-start gap-2 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
+      <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+      <span>{message}</span>
+    </div>
+  );
+}
 
 function OrderSummary({ contract, total }) {
   const meta = CONTRACT_TYPES[contract.type];
@@ -270,9 +371,9 @@ function OrderSummary({ contract, total }) {
           {contract.propertyType} · {contract.propertyAddress}
         </div>
         <div className="text-xs text-slate-500 mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full"
-          style={{ background: meta.accentSoft, color: meta.accent }}>
+          style={{ background: `${meta?.accent ?? "#635BFF"}20`, color: meta?.accent ?? "#635BFF" }}>
           <FileText size={11} />
-          {meta.label}
+          {meta?.label ?? "Contract"}
         </div>
       </div>
 
@@ -301,7 +402,7 @@ function OrderSummary({ contract, total }) {
         </div>
         <div className="flex items-start gap-2">
           <Check size={11} className="text-emerald-500 mt-0.5 flex-shrink-0" />
-          <span>Funds held in escrow until move-in is confirmed.</span>
+          <span>Funds processed by Stripe — your card is never stored on our servers.</span>
         </div>
         <div className="flex items-start gap-2">
           <Check size={11} className="text-emerald-500 mt-0.5 flex-shrink-0" />
@@ -321,134 +422,6 @@ function Line({ label, value }) {
   );
 }
 
-// ============================================================================
-// Card preview (Stripe-style)
-// ============================================================================
-
-function CardPreview({ card, focused }) {
-  const brand = detectBrand(card.number);
-  const isFlipped = focused === "cvc";
-  const last4 = card.number.replace(/\D/g, "").slice(-4);
-  return (
-    <div className="relative w-full aspect-[1.586/1] max-w-[400px] mx-auto" style={{ perspective: 1000 }}>
-      <div
-        className="absolute inset-0 transition-transform duration-500"
-        style={{
-          transformStyle: "preserve-3d",
-          transform: isFlipped ? "rotateY(180deg)" : "rotateY(0deg)",
-        }}
-      >
-        {/* Front */}
-        <div
-          className="absolute inset-0 rounded-2xl p-5 shadow-xl text-white overflow-hidden"
-          style={{
-            background: brand === "amex"
-              ? "linear-gradient(135deg, #1B4F8C, #0E2C5C)"
-              : brand === "mastercard"
-              ? "linear-gradient(135deg, #1A1A2E, #2D2D5E)"
-              : "linear-gradient(135deg, #635BFF, #5046E5)",
-            backfaceVisibility: "hidden",
-          }}
-        >
-          <div className="absolute -top-12 -right-12 w-40 h-40 rounded-full bg-white/10 blur-2xl" />
-          <div className="flex justify-between items-start">
-            <div className="text-[11px] tracking-wider opacity-70 font-semibold uppercase">
-              ViewxRent
-            </div>
-            <BrandLogo brand={brand} />
-          </div>
-
-          <div className="mt-7 mb-5">
-            <div className="text-[10px] uppercase tracking-wider opacity-60 mb-1.5">Card number</div>
-            <div className="text-lg md:text-xl font-mono tracking-[2px]">
-              {card.number || "•••• •••• •••• ••••"}
-            </div>
-          </div>
-
-          <div className="flex items-end justify-between text-[11px]">
-            <div>
-              <div className="uppercase tracking-wider opacity-60 mb-0.5">Cardholder</div>
-              <div className="font-semibold uppercase tracking-wide">
-                {card.name || "FULL NAME"}
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="uppercase tracking-wider opacity-60 mb-0.5">Expires</div>
-              <div className="font-mono tracking-wider">{card.expiry || "MM/YY"}</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Back */}
-        <div
-          className="absolute inset-0 rounded-2xl shadow-xl text-white overflow-hidden"
-          style={{
-            background: "linear-gradient(135deg, #1A1A2E, #3A3A5E)",
-            backfaceVisibility: "hidden",
-            transform: "rotateY(180deg)",
-          }}
-        >
-          <div className="h-10 bg-black/60 mt-5" />
-          <div className="px-5 mt-5 flex items-center justify-end gap-3">
-            <div className="bg-white/95 text-slate-900 font-mono tracking-wider px-3 py-1.5 rounded text-sm">
-              {card.cvc || "•••"}
-            </div>
-            <div className="text-[10px] uppercase tracking-wider opacity-70">CVC</div>
-          </div>
-          <div className="px-5 mt-5 text-[10px] opacity-60 leading-relaxed">
-            This card is the property of ViewxRent. Use of this card is subject to
-            the cardholder's agreement.
-          </div>
-          {last4 && (
-            <div className="absolute bottom-4 left-5 text-[11px] opacity-70">
-              ending in <span className="font-mono">{last4}</span>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BrandLogo({ brand }) {
-  if (brand === "visa") {
-    return (
-      <div className="bg-white px-2.5 py-1 rounded text-[#1A1F71] font-bold italic text-sm tracking-tight">
-        VISA
-      </div>
-    );
-  }
-  if (brand === "mastercard") {
-    return (
-      <div className="flex items-center -space-x-2">
-        <div className="w-7 h-7 rounded-full bg-[#EB001B] opacity-95" />
-        <div className="w-7 h-7 rounded-full bg-[#F79E1B] opacity-95" />
-      </div>
-    );
-  }
-  if (brand === "amex") {
-    return (
-      <div className="bg-white px-2 py-1 rounded text-[#016FD0] font-bold text-[10px] tracking-tight">
-        AMERICAN<br />EXPRESS
-      </div>
-    );
-  }
-  return (
-    <CreditCard size={20} className="text-white/70" />
-  );
-}
-
-function BrandTag({ brand }) {
-  if (!brand) return null;
-  return (
-    <div className="absolute right-3 top-1/2 -translate-y-1/2">
-      <BrandLogo brand={brand} />
-    </div>
-  );
-}
-
-// ============================================================================
-
 function ProcessingState() {
   return (
     <div className="py-16 flex flex-col items-center justify-center text-center">
@@ -465,7 +438,7 @@ function ProcessingState() {
   );
 }
 
-function SuccessView({ contract, onBack, onHome }) {
+function SuccessView({ contract, total, onBack, onHome }) {
   const p = contract.payment;
   return (
     <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 p-8 md:p-10">
@@ -475,7 +448,7 @@ function SuccessView({ contract, onBack, onHome }) {
         </div>
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Payment successful</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Welcome home, {contract.tenantName.split(" ")[0]}. Your contract is now active.
+          Welcome home, {contract.tenantName?.split(" ")[0] || "tenant"}. Your contract is now active.
         </p>
       </div>
 
@@ -485,7 +458,7 @@ function SuccessView({ contract, onBack, onHome }) {
             Receipt
           </span>
           <span className="text-[10.5px] text-slate-400 font-mono">
-            {p.transactionId}
+            {p?.transactionId ?? "—"}
           </span>
         </div>
 
@@ -499,24 +472,29 @@ function SuccessView({ contract, onBack, onHome }) {
           <div>
             <div className="text-xs text-slate-500">Paid in full</div>
             <div className="text-[10.5px] text-slate-400">
-              {new Date(p.paidAt).toLocaleString("en-US", {
-                month: "short", day: "numeric", year: "numeric",
-                hour: "numeric", minute: "2-digit",
-              })}
+              {p?.paidAt
+                ? new Date(p.paidAt).toLocaleString("en-US", {
+                    month: "short", day: "numeric", year: "numeric",
+                    hour: "numeric", minute: "2-digit",
+                  })
+                : "—"}
             </div>
           </div>
           <div className="text-xl font-bold text-slate-900">
-            ₱{Number(p.amount).toLocaleString()}.00
+            ₱{Number(p?.amount ?? total).toLocaleString()}.00
           </div>
         </div>
 
-        <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
-          <span className="inline-flex items-center gap-1.5">
-            <CreditCard size={11} />
-            {(p.method || "card").toUpperCase()} •••• {p.last4}
-          </span>
-          <span className="text-slate-400">Receipt ID: {p.transactionId}</span>
-        </div>
+        {(p?.method || p?.last4) && (
+          <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
+            <span className="inline-flex items-center gap-1.5">
+              <CreditCard size={11} />
+              {(p.method || "card").toUpperCase()}
+              {p.last4 ? ` •••• ${p.last4}` : ""}
+            </span>
+            <span className="text-slate-400">Receipt ID: {p.transactionId}</span>
+          </div>
+        )}
       </div>
 
       <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -549,9 +527,7 @@ function NotFound({ onBack, title, message }) {
     <div className="min-h-screen flex flex-col items-center justify-center text-center px-4 bg-slate-50">
       <AlertCircle size={32} className="text-slate-400 mb-3" />
       <h1 className="text-lg font-bold text-slate-700">{title}</h1>
-      {message && (
-        <p className="text-sm text-slate-500 mt-1 max-w-sm">{message}</p>
-      )}
+      {message && <p className="text-sm text-slate-500 mt-1 max-w-sm">{message}</p>}
       <button
         onClick={onBack}
         className="mt-4 px-4 py-2 bg-[#EC6138] text-white rounded-lg font-semibold text-sm hover:opacity-90 transition"
@@ -562,51 +538,7 @@ function NotFound({ onBack, title, message }) {
   );
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function Label({ children }) {
-  return (
-    <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 mb-1.5 block">
-      {children}
-    </label>
-  );
-}
-
-function inputCls(extra = "") {
-  return `w-full bg-white border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 outline-none focus:border-[#635BFF] focus:ring-2 focus:ring-[#635BFF]/15 transition ${extra}`;
-}
-
-function formatCardNumber(value) {
-  const digits = value.replace(/\D/g, "").slice(0, 19);
-  if (/^3[47]/.test(digits)) {
-    // AmEx 4-6-5 grouping
-    return digits.replace(/^(\d{0,4})(\d{0,6})(\d{0,5}).*/, (_, a, b, c) =>
-      [a, b, c].filter(Boolean).join(" ")
-    );
-  }
-  return digits.replace(/(\d{4})(?=\d)/g, "$1 ");
-}
-
-function formatExpiry(value) {
-  const digits = value.replace(/\D/g, "").slice(0, 4);
-  if (digits.length < 3) return digits;
-  return digits.slice(0, 2) + "/" + digits.slice(2);
-}
-
-function detectBrand(number) {
-  const d = number.replace(/\D/g, "");
-  if (!d) return null;
-  if (/^4/.test(d)) return "visa";
-  if (/^(5[1-5]|2[2-7])/.test(d)) return "mastercard";
-  if (/^3[47]/.test(d)) return "amex";
-  return null;
-}
-
-// ============================================================================
-// Header
-// ============================================================================
+// ─── Header (unchanged from previous version) ────────────────────────────────
 
 function Header({ navigate, dropdownOpen, setDropdownOpen, initial, isAuthenticated, onBack }) {
   return (

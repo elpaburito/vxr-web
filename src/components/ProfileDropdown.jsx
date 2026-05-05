@@ -1,18 +1,44 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Home, Heart, User, MessageCircle, FileText, BarChart2, LogOut } from "lucide-react";
+import { Home, Heart, User, MessageCircle, FileText, LogOut, ShieldCheck, Building2, KeyRound, CreditCard, PlusCircle } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
+import { hasUserListings } from "../lib/profileService.js";
+import { hasActiveContract } from "../lib/contractsService.js";
 
 export default function ProfileDropdown({ onLogout }) {
   const navigate = useNavigate();
   const { user, profile, signOut } = useAuth();
+  const [hasListings, setHasListings] = useState(false);
+  const [hasRental,   setHasRental]   = useState(false);
+
+  const isAdmin   = profile?.role === "admin";
+  const roleLabel = isAdmin
+    ? "Admin"
+    : hasListings && hasRental
+      ? "Landlord · Tenant"
+      : hasListings
+        ? "Landlord"
+        : "Tenant";
+
+  useEffect(() => {
+    if (!user?.id) { setHasListings(false); setHasRental(false); return; }
+    let cancelled = false;
+    hasUserListings(user.id).then((has) => { if (!cancelled) setHasListings(has); });
+    hasActiveContract(user.id).then((has) => { if (!cancelled) setHasRental(has); });
+    return () => { cancelled = true; };
+  }, [user?.id]);
 
   const menuItems = [
-    { icon: Home, label: "Manage Listings", path: "/my-listings" },
-    { icon: Heart, label: "Wishlists", path: "/wishlists" },
-    { icon: User, label: "Your Account", path: "/profile" },
-    { icon: MessageCircle, label: "Messages", path: "/messages" },
-    { icon: FileText, label: "Enlistment Applications", path: "/enlistment" },
-    { icon: BarChart2, label: "Applicants Reports", path: "/applicants" },
+    ...(isAdmin                ? [{ icon: ShieldCheck, label: "Admin Dashboard",         path: "/admin" }]            : []),
+    ...(hasListings            ? [{ icon: Home,        label: "My Listings",             path: "/my-listings" }]      : []),
+    ...(!isAdmin               ? [{ icon: PlusCircle,  label: "List a Property",         path: "/enlist" }]           : []),
+    ...(hasListings            ? [{ icon: Building2,   label: "Tenant Management",       path: "/tenant-management" }] : []),
+    ...(hasRental && !isAdmin  ? [{ icon: KeyRound,    label: "My Rental",               path: "/my-rental" }]        : []),
+    ...(hasRental && !isAdmin  ? [{ icon: CreditCard,  label: "My Payments",             path: "/my-payments" }]      : []),
+    {                             icon: Heart,         label: "Wishlists",               path: "/wishlists" },
+    {                             icon: User,          label: "Your Account",            path: "/profile" },
+    {                             icon: MessageCircle, label: "Messages",                path: "/messages" },
+    {                             icon: FileText,      label: "Enlistment Applications", path: "/enlistment" },
   ];
 
   const handleLogout = async () => {
@@ -49,32 +75,31 @@ export default function ProfileDropdown({ onLogout }) {
             {displayEmail}
           </p>
         )}
-        {profile?.role && (
-          <span style={{
-            display: "inline-block", marginTop: 6, fontSize: 10, fontWeight: 600,
-            color: "#EC6138", background: "#fff1eb", padding: "2px 8px",
-            borderRadius: 999, textTransform: "uppercase", letterSpacing: "0.04em"
-          }}>
-            {profile.role}
-          </span>
-        )}
+        <span style={{
+          display: "inline-block", marginTop: 6, fontSize: 10, fontWeight: 600,
+          color: "#EC6138", background: "#fff1eb", padding: "2px 8px",
+          borderRadius: 999, textTransform: "uppercase", letterSpacing: "0.04em"
+        }}>
+          {roleLabel}
+        </span>
       </div>
 
       <div style={{ padding: "4px 0" }}>
-        {menuItems.map(({ icon: Icon, label, path }) => (
+        {menuItems.map((item) => (
           <button
-            key={label}
-            onClick={() => navigate(path)}
+            key={item.label}
+            onClick={() => navigate(item.path)}
             style={{
               width: "100%", display: "flex", alignItems: "center",
-              gap: 12, padding: "10px 16px", fontSize: 14, color: "#333",
-              background: "none", border: "none", cursor: "pointer", textAlign: "left"
+              gap: 12, padding: "10px 16px", fontSize: 14,
+              color: "#333", background: "none", border: "none",
+              cursor: "pointer", textAlign: "left",
             }}
-            onMouseOver={e => e.currentTarget.style.background = "#f9f9f9"}
-            onMouseOut={e => e.currentTarget.style.background = "none"}
+            onMouseOver={(e) => { e.currentTarget.style.background = "#f9f9f9"; }}
+            onMouseOut={(e) => { e.currentTarget.style.background = "none"; }}
           >
-            <Icon size={16} color="#aaa" />
-            {label}
+            <item.icon size={16} color="#aaa" />
+            {item.label}
           </button>
         ))}
       </div>

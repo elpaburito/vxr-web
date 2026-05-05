@@ -1,48 +1,66 @@
 // ApplicationModal.jsx
-import { useState } from "react";
-import { X, ChevronLeft, ChevronRight, Check, Upload, AlertCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { X, ChevronLeft, ChevronRight, Check, Upload, AlertCircle, Loader2 } from "lucide-react";
 
-export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice, onSubmit }) {
+const EMPTY_FORM = {
+  // Step 1 - Personal Information
+  fullName: "",
+  dateOfBirth: "",
+  contactNumber: "",
+  email: "",
+  currentAddress: "",
+
+  // Step 2 - Employment & Financial Info
+  employmentStatus: "",
+  jobTitle: "",
+  companyName: "",
+  monthlyIncome: "",
+  lengthOfEmployment: "",
+  workAddress: "",
+
+  // Step 3 - Rental History
+  firstTimeRenter: "",
+  previousAddress: "",
+  rentalDuration: "",
+  reasonForLeaving: "",
+  landlordName: "",
+  landlordPhone: "",
+  landlordEmail: "",
+
+  // Step 4 - Identity Verification
+  validIdFront: null,
+  validIdBack: null,
+  proofOfIncome: null,
+
+  // Step 5 - Declaration & Consent
+  consentIdentity: false,
+  consentDataPrivacy: false,
+};
+
+export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice, onSubmit, submitting = false, submitError = null }) {
   const [step, setStep] = useState(1);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  
-  // Form Data State
-  const [formData, setFormData] = useState({
-    // Step 1 - Personal Information
-    fullName: "",
-    dateOfBirth: "",
-    contactNumber: "",
-    email: "",
-    currentAddress: "",
-    
-    // Step 2 - Employment & Financial Info
-    employmentStatus: "",
-    jobTitle: "",
-    companyName: "",
-    monthlyIncome: "",
-    lengthOfEmployment: "",
-    workAddress: "",
-    
-    // Step 3 - Rental History
-    firstTimeRenter: "",
-    previousAddress: "",
-    rentalDuration: "",
-    reasonForLeaving: "",
-    landlordName: "",
-    landlordPhone: "",
-    landlordEmail: "",
-    
-    // Step 4 - Identity Verification
-    validIdFront: null,
-    validIdBack: null,
-    proofOfIncome: null,
-    
-    // Step 5 - Declaration & Consent
-    consentIdentity: false,
-    consentDataPrivacy: false
-  });
-
+  const [formData, setFormData] = useState(EMPTY_FORM);
   const [errors, setErrors] = useState({});
+
+  // Reset internal state every time the modal is reopened so a previous
+  // submission's values / step / errors don't leak into a new attempt.
+  useEffect(() => {
+    if (isOpen) {
+      setStep(1);
+      setShowConfirmModal(false);
+      setFormData(EMPTY_FORM);
+      setErrors({});
+    }
+  }, [isOpen]);
+
+  const handleClose = () => {
+    setStep(1);
+    setShowConfirmModal(false);
+    setFormData(EMPTY_FORM);
+    setErrors({});
+    onClose?.();
+  };
 
   if (!isOpen) return null;
 
@@ -121,15 +139,9 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
   const handleConfirmSubmit = () => {
     setShowConfirmModal(false);
     onSubmit(formData);
-    onClose();
-    setStep(1);
-    setFormData({
-      fullName: "", dateOfBirth: "", contactNumber: "", email: "", currentAddress: "",
-      employmentStatus: "", jobTitle: "", companyName: "", monthlyIncome: "", lengthOfEmployment: "", workAddress: "",
-      firstTimeRenter: "", previousAddress: "", rentalDuration: "", reasonForLeaving: "", landlordName: "", landlordPhone: "", landlordEmail: "",
-      validIdFront: null, validIdBack: null, proofOfIncome: null,
-      consentIdentity: false, consentDataPrivacy: false
-    });
+    // The parent flips isOpen back to false after a successful submit;
+    // the isOpen effect above takes care of clearing local state for
+    // the next time the modal is opened.
   };
 
   const handleFileChange = (field, e) => {
@@ -540,9 +552,9 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
       <div className="fixed inset-0 z-50 overflow-y-auto">
         <div className="flex items-center justify-center min-h-screen px-4 py-8">
           {/* Backdrop with blur effect - shows the underlying content */}
-          <div 
-            className="fixed inset-0 backdrop-blur-md bg-white/30 transition-all" 
-            onClick={onClose}
+          <div
+            className="fixed inset-0 backdrop-blur-md bg-white/30 transition-all"
+            onClick={handleClose}
           />
           
           {/* Modal Panel */}
@@ -553,26 +565,38 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                 <h3 className="text-lg font-semibold text-white">Apply for Rental</h3>
                 <p className="text-sm text-white text-opacity-90">{unitTitle}</p>
               </div>
-              <button onClick={onClose} className="text-white hover:text-gray-200 transition">
+              <button onClick={handleClose} className="text-white hover:text-gray-200 transition">
                 <X size={24} />
               </button>
             </div>
             
-            {/* Price Summary */}
-            <div className="px-6 py-3 bg-orange-50 border-b border-orange-100">
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-gray-600">Monthly Rent:</span>
-                <span className="font-semibold text-[#e8756a]">{unitPrice}/month</span>
-              </div>
-              <div className="flex justify-between items-center mt-1">
-                <span className="text-sm text-gray-600">Security Deposit:</span>
-                <span className="font-semibold text-gray-700">{unitPrice}</span>
-              </div>
-              <div className="flex justify-between items-center mt-1 pt-1 border-t border-orange-200">
-                <span className="text-sm font-medium text-gray-700">Initial Payment:</span>
-                <span className="font-bold text-[#e8756a]">₱{parseInt(unitPrice.replace(/[^0-9]/g, '') || '0') * 2}</span>
-              </div>
-            </div>
+            {/* Price Summary — unitPrice may be null if the listing has no
+                monthly_rent; coerce to a string and parse defensively so the
+                modal renders instead of throwing TypeError on .replace(). */}
+            {(() => {
+              const priceStr = unitPrice == null ? "" : String(unitPrice);
+              const priceNum = Number((priceStr.match(/[0-9]+/g) ?? []).join("")) || 0;
+              const display = priceStr.trim() || "Price not set";
+              const initial = priceNum > 0 ? `₱${(priceNum * 2).toLocaleString()}` : "—";
+              return (
+                <div className="px-6 py-3 bg-orange-50 border-b border-orange-100">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600">Monthly Rent:</span>
+                    <span className="font-semibold text-[#e8756a]">
+                      {priceNum > 0 ? `${display}/month` : display}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center mt-1">
+                    <span className="text-sm text-gray-600">Security Deposit:</span>
+                    <span className="font-semibold text-gray-700">{display}</span>
+                  </div>
+                  <div className="flex justify-between items-center mt-1 pt-1 border-t border-orange-200">
+                    <span className="text-sm font-medium text-gray-700">Initial Payment:</span>
+                    <span className="font-bold text-[#e8756a]">{initial}</span>
+                  </div>
+                </div>
+              );
+            })()}
             
             {/* Content */}
             <div className="px-6 py-6 max-h-[60vh] overflow-y-auto">
@@ -605,10 +629,15 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
               ) : (
                 <button
                   onClick={handleSubmitClick}
-                  className="px-5 py-2 bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white rounded-lg font-medium hover:opacity-90 transition shadow-md"
+                  disabled={submitting}
+                  className="px-5 py-2 bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white rounded-lg font-medium hover:opacity-90 transition shadow-md disabled:opacity-60 flex items-center gap-2"
                 >
+                  {submitting && <Loader2 size={16} className="animate-spin" />}
                   Submit Application
                 </button>
+              )}
+              {submitError && (
+                <p className="text-red-500 text-xs mt-2 text-center">{submitError}</p>
               )}
             </div>
           </div>
@@ -639,9 +668,11 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   </button>
                   <button
                     onClick={handleConfirmSubmit}
-                    className="flex-1 px-4 py-2 bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white rounded-lg font-medium hover:opacity-90 transition"
+                    disabled={submitting}
+                    className="flex-1 px-4 py-2 bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white rounded-lg font-medium hover:opacity-90 transition disabled:opacity-60 flex items-center justify-center gap-2"
                   >
-                    Yes
+                    {submitting && <Loader2 size={14} className="animate-spin" />}
+                    Yes, Submit
                   </button>
                 </div>
               </div>

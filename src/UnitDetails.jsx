@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   Home, Bell, ArrowLeft, Heart, MapPin, Check, X, Wifi, Wind,
   Coffee, Car, Shield, Star, Bed, Bath, Square,
-  Phone, MessageCircle, ImageOff, Loader2, AlertCircle,
+  MessageCircle, ImageOff, Loader2, AlertCircle,
   ChevronLeft, ChevronRight, Maximize2,
 } from "lucide-react";
 import { GoogleMap, useJsApiLoader, MarkerF } from "@react-google-maps/api";
@@ -11,7 +11,10 @@ import ProfileDropdown from "./components/ProfileDropdown.jsx";
 import ApplicationModal from "./components/ApplicationModal.jsx";
 import ImageLightbox from "./components/ImageLightbox.jsx";
 import { useWishlist } from "./context/WishlistContext.jsx";
-import { fetchListingById } from "./lib/listingsService";
+import { useAuth } from "./context/AuthContext.jsx";
+import { fetchListingById, fetchHostProfile } from "./lib/listingsService";
+import { submitApplication } from "./lib/applicationsService";
+import { getOrCreateConversation } from "./lib/messagingService";
 
 const MAP_LIBRARIES = ["places"];
 
@@ -33,6 +36,7 @@ export default function UnitDetails() {
   const { id } = useParams();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [listing, setListing] = useState(null);
+  const [hostProfile, setHostProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [liked, setLiked] = useState(false);
@@ -40,6 +44,31 @@ export default function UnitDetails() {
   const [lightboxIndex, setLightboxIndex] = useState(null);
   const [showApplicationModal, setShowApplicationModal] = useState(false);
   const { addToWishlist, removeFromWishlist, isInWishlist } = useWishlist();
+  const { user } = useAuth();
+  const [appSubmitting, setAppSubmitting] = useState(false);
+  const [appError, setAppError] = useState(null);
+  const [imgErrors, setImgErrors] = useState({});
+  const [openingChat, setOpeningChat] = useState(false);
+
+  const handleMessageHost = async () => {
+    if (!user) { navigate("/login"); return; }
+    if (!listing?.ownerId || isOwner) return;
+    setOpeningChat(true);
+    try {
+      const { data, error } = await getOrCreateConversation(
+        user.id,
+        listing.ownerId,
+        listing.id
+      );
+      if (error || !data?.id) {
+        alert(error?.message || "Could not start conversation.");
+        return;
+      }
+      navigate(`/messages?c=${data.id}`);
+    } finally {
+      setOpeningChat(false);
+    }
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -49,6 +78,11 @@ export default function UnitDetails() {
       setListing(data);
       setLoading(false);
       if (data && isInWishlist(data.id)) setLiked(true);
+      if (data?.ownerId) {
+        fetchHostProfile(data.ownerId).then(({ data: profile }) => {
+          setHostProfile(profile);
+        });
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -65,8 +99,37 @@ export default function UnitDetails() {
     setLiked(!liked);
   };
 
-  const handleApplicationSubmit = () => {
-    alert("Application submitted. The landlord will review your application.");
+  const handleApplicationSubmit = async (formData) => {
+    if (!user) {
+      navigate("/login");
+      return;
+    }
+    setAppSubmitting(true);
+    setAppError(null);
+    try {
+      const documentFiles = {
+        validIdFront:   formData.validIdFront   instanceof File ? formData.validIdFront   : null,
+        validIdBack:    formData.validIdBack    instanceof File ? formData.validIdBack    : null,
+        proofOfIncome:  formData.proofOfIncome  instanceof File ? formData.proofOfIncome  : null,
+      };
+      const { error } = await submitApplication({
+        listingId:   listing.id,
+        tenantId:    user.id,
+        landlordId:  listing.ownerId ?? null,
+        formData,
+        documentFiles,
+      });
+      if (error) {
+        setAppError(error.message || "Failed to submit. Please try again.");
+        return;
+      }
+      alert("Application submitted! The landlord will review and get back to you.");
+      setShowApplicationModal(false);
+    } catch (err) {
+      setAppError(err?.message || "Unexpected error.");
+    } finally {
+      setAppSubmitting(false);
+    }
   };
 
   if (loading) {
@@ -95,6 +158,8 @@ export default function UnitDetails() {
     );
   }
 
+  const markImgError = (idx) => setImgErrors(prev => ({ ...prev, [idx]: true }));
+
   const images = listing.images && listing.images.length > 0 ? listing.images : [];
   // Carousel shows normal photos only (no panorama / 360 media)
   const carouselImages = listing.normalImages && listing.normalImages.length > 0
@@ -106,6 +171,9 @@ export default function UnitDetails() {
     setLightboxIndex(idx >= 0 ? idx : 0);
   };
   const hasLocation = listing.latitude != null && listing.longitude != null;
+  const isOwner = !!user && !!listing.ownerId && user.id === listing.ownerId;
+  const hostDisplayName = hostProfile?.full_name || listing.hostName || "ViewxRent Host";
+  const hostAvatarUrl = hostProfile?.avatar_url || null;
 
   return (
     <div className="w-[100%] min-h-[100vh] bg-gray-50 flex flex-col">
@@ -116,7 +184,7 @@ export default function UnitDetails() {
           <div className="w-[100%] lg:w-[60%]">
             {/* Cover image (click to open carousel) */}
             <div className="w-[100%] aspect-[16/9] bg-gray-200 rounded-xl overflow-hidden mb-3 relative group">
-              {images.length > 0 ? (
+              {images.length > 0 && !imgErrors[activeImage] ? (
                 <>
                   <button
                     type="button"
@@ -128,6 +196,7 @@ export default function UnitDetails() {
                       src={images[activeImage]}
                       alt={listing.title}
                       className="w-[100%] h-[100%] object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                      onError={() => markImgError(activeImage)}
                     />
                   </button>
 
@@ -187,7 +256,13 @@ export default function UnitDetails() {
                     onDoubleClick={() => openLightbox(url)}
                     className={`aspect-[4/3] rounded-lg overflow-hidden border-2 transition ${activeImage === i ? "border-[#EC6138]" : "border-transparent"}`}
                   >
-                    <img src={url} alt="" className="w-full h-full object-cover" />
+                    {imgErrors[i] ? (
+                      <div className="w-full h-full bg-gray-100 flex items-center justify-center">
+                        <ImageOff size={16} className="text-gray-300" />
+                      </div>
+                    ) : (
+                      <img src={url} alt="" className="w-full h-full object-cover" onError={() => markImgError(i)} />
+                    )}
                   </button>
                 ))}
               </div>
@@ -326,39 +401,78 @@ export default function UnitDetails() {
                   {listing.leaseTerm && <Row label="Lease Term" value={`${listing.leaseTerm} Months`} />}
                 </div>
 
-                <button
-                  onClick={() => setShowApplicationModal(true)}
-                  className="w-[100%] py-[0.875rem] text-white font-semibold rounded-lg transition hover:opacity-90 mb-[0.75rem]"
-                  style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-                >
-                  Apply Now
-                </button>
-                <button className="w-[100%] py-[0.875rem] border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">
-                  Contact Host
-                </button>
+                {!isOwner && (
+                  <>
+                    {(() => {
+                      const verified = !!listing.isVerified;
+                      const active   = listing.status === "active";
+                      const canApply = verified && active;
+                      const reason = !active
+                        ? "This listing is not currently accepting applications."
+                        : "Pending verification — applications will open once an admin verifies this listing.";
+                      return (
+                        <>
+                          <button
+                            onClick={() => canApply && setShowApplicationModal(true)}
+                            disabled={!canApply}
+                            title={canApply ? "" : reason}
+                            className="w-[100%] py-[0.875rem] text-white font-semibold rounded-lg transition hover:opacity-90 mb-[0.75rem] disabled:opacity-60 disabled:cursor-not-allowed"
+                            style={{
+                              background: canApply
+                                ? "linear-gradient(to right, #e8756a, #f0a090)"
+                                : "linear-gradient(to right, #94a3b8, #cbd5e1)",
+                            }}
+                          >
+                            {canApply ? "Apply Now" : verified ? "Not Accepting Applications" : "Pending Verification"}
+                          </button>
+                          {!canApply && (
+                            <p className="text-xs text-gray-500 mb-[0.75rem] text-center">{reason}</p>
+                          )}
+                          <button className="w-[100%] py-[0.875rem] border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">
+                            Contact Host
+                          </button>
+                        </>
+                      );
+                    })()}
+                  </>
+                )}
+                {isOwner && (
+                  <p className="w-[100%] py-[0.875rem] text-center text-[0.875rem] text-gray-500 bg-gray-50 rounded-lg">
+                    This is your listing.
+                  </p>
+                )}
               </div>
 
               <div className="bg-white rounded-xl border border-gray-200 p-[1.5rem]">
                 <h3 className="text-[1rem] font-semibold text-gray-800 mb-[1rem]">Hosted by</h3>
                 <div className="flex items-center gap-[1rem] mb-[1rem]">
-                  <div className="w-[3.5rem] h-[3.5rem] bg-gradient-to-r from-orange-500 to-pink-500 rounded-full flex items-center justify-center">
-                    <span className="text-white font-bold text-[1.25rem]">
-                      {(listing.hostName || "V").charAt(0).toUpperCase()}
-                    </span>
+                  <div className="w-[3.5rem] h-[3.5rem] rounded-full overflow-hidden bg-gradient-to-r from-orange-500 to-pink-500 flex items-center justify-center flex-shrink-0">
+                    {hostAvatarUrl ? (
+                      <img
+                        src={hostAvatarUrl}
+                        alt={hostDisplayName}
+                        className="w-full h-full object-cover"
+                        onError={(e) => { e.currentTarget.style.display = "none"; }}
+                      />
+                    ) : (
+                      <span className="text-white font-bold text-[1.25rem]">
+                        {hostDisplayName.charAt(0).toUpperCase()}
+                      </span>
+                    )}
                   </div>
                   <div>
-                    <p className="font-semibold text-gray-800">{listing.hostName || "ViewxRent Host"}</p>
+                    <p className="font-semibold text-gray-800">{hostDisplayName}</p>
                     <p className="text-[0.75rem] text-gray-500">{listing.hostRole || "Verified Partner"}</p>
                   </div>
                 </div>
                 <div className="flex gap-[0.5rem] mb-[1rem]">
-                  <button className="flex-1 py-[0.5rem] border border-gray-200 rounded-lg text-[0.875rem] text-gray-600 hover:bg-gray-50 transition flex items-center justify-center gap-[0.5rem]">
+                  <button
+                    onClick={handleMessageHost}
+                    disabled={isOwner || openingChat}
+                    className="flex-1 py-[0.5rem] border border-gray-200 rounded-lg text-[0.875rem] text-gray-600 hover:bg-gray-50 transition flex items-center justify-center gap-[0.5rem] disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
                     <MessageCircle size={16} />
-                    Message
-                  </button>
-                  <button className="flex-1 py-[0.5rem] border border-gray-200 rounded-lg text-[0.875rem] text-gray-600 hover:bg-gray-50 transition flex items-center justify-center gap-[0.5rem]">
-                    <Phone size={16} />
-                    Call
+                    {openingChat ? "Opening…" : "Message"}
                   </button>
                 </div>
                 <div className="border-t border-gray-100 pt-[1rem]">
@@ -372,10 +486,12 @@ export default function UnitDetails() {
 
       <ApplicationModal
         isOpen={showApplicationModal}
-        onClose={() => setShowApplicationModal(false)}
+        onClose={() => { setShowApplicationModal(false); setAppError(null); }}
         unitTitle={listing.title}
         unitPrice={listing.price}
         onSubmit={handleApplicationSubmit}
+        submitting={appSubmitting}
+        submitError={appError}
       />
 
       <ImageLightbox

@@ -6,12 +6,11 @@ import { useWishlist } from "../context/WishlistContext.jsx";
 export default function PropertyCard({ property, onView }) {
   const navigate = useNavigate();
   const { isInWishlist, toggleWishlist } = useWishlist();
-  const [liked, setLiked] = useState(isInWishlist(property.id));
+  const liked = isInWishlist(property.id);
+  const [imgError, setImgError] = useState(false);
 
   const handleLike = (e) => {
     e.stopPropagation();
-    const newLikedState = !liked;
-    setLiked(newLikedState);
     toggleWishlist(property);
   };
 
@@ -41,17 +40,12 @@ export default function PropertyCard({ property, onView }) {
       onClick={handleCardClick}
     >
       <div className="relative overflow-hidden aspect-[4/3]">
-        {property.img ? (
+        {!imgError && (property.img || (property.images && property.images.length > 0)) ? (
           <img
-            src={property.img}
+            src={property.img || property.images[0]}
             alt={property.title}
             className="w-[100%] h-[100%] object-cover group-hover:scale-105 transition-transform duration-500"
-          />
-        ) : property.images && property.images.length > 0 ? (
-          <img
-            src={property.images[0]}
-            alt={property.title}
-            className="w-[100%] h-[100%] object-cover group-hover:scale-105 transition-transform duration-500"
+            onError={() => setImgError(true)}
           />
         ) : (
           <div className="w-[100%] h-[100%] bg-gray-100 flex flex-col items-center justify-center gap-2">

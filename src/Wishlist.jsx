@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { 
-  Home, Bell, ArrowLeft, Heart, Star, MapPin, 
-  Calendar, Users, ChevronRight, X, Trash2
+import {
+  Home, Bell, ArrowLeft, Heart, Trash2, Loader2,
 } from "lucide-react";
 import ProfileDropdown from "./components/ProfileDropdown.jsx";
 import { useWishlist } from "./context/WishlistContext.jsx";
@@ -11,16 +10,16 @@ import PropertyCard from "./components/PropertyCard.jsx";
 export default function Wishlist() {
   const navigate = useNavigate();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const { wishlist, removeFromWishlist } = useWishlist();
+  const { wishlist, loading, clearWishlist } = useWishlist();
 
   const handleLogout = () => {
     setDropdownOpen(false);
     navigate("/");
   };
 
-  const handleRemoveAll = () => {
+  const handleRemoveAll = async () => {
     if (window.confirm('Are you sure you want to remove all items from your wishlist?')) {
-      wishlist.forEach(item => removeFromWishlist(item.id));
+      await clearWishlist();
     }
   };
 
@@ -141,7 +140,11 @@ export default function Wishlist() {
         <div className="border-t border-gray-200 mb-8"></div>
 
         {/* Wishlist Items */}
-        {wishlist.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-16 text-gray-500">
+            <Loader2 size={20} className="animate-spin mr-2" /> Loading your saved properties…
+          </div>
+        ) : wishlist.length === 0 ? (
           <div className="text-center py-16">
             <Heart size={64} className="mx-auto text-gray-300 mb-4" />
             <h2 className="text-2xl font-semibold text-gray-700 mb-2">Your wishlist is empty</h2>
@@ -158,9 +161,9 @@ export default function Wishlist() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {wishlist.map((property) => (
               <div key={property.id} className="relative">
-                <PropertyCard 
+                <PropertyCard
                   property={property}
-                  onView={() => navigate(`/listing/${property.id}`)}
+                  onView={() => navigate(`/unit/${property.id}`)}
                 />
               </div>
             ))}

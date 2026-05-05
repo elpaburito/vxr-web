@@ -1,120 +1,219 @@
-import { useState, useRef, useEffect, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Home, Bell, ArrowLeft, Search, Send, Paperclip, Smile,
-  Phone, Video, MoreVertical, Check, CheckCheck, MessageCircle,
+  MoreVertical, Check, CheckCheck, MessageCircle,
+  Loader2, FileText,
 } from "lucide-react";
 import ProfileDropdown from "./components/ProfileDropdown.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
+import {
+  fetchConversations, fetchMessages, fetchUnreadCounts,
+  sendMessage, sendAttachmentMessage,
+  markMessagesRead, subscribeToMessages, subscribeToConversations,
+} from "./lib/messagingService";
 
-// ===== MOCK DATA — replace with real data when wiring to Supabase =====
-const MOCK_CONVERSATIONS = [
-  {
-    id: 1,
-    name: "Lebrown DJ",
-    preview: "Hey! Tito when do we plan to meet?",
-    time: "2m ago",
-    unread: 3,
-    online: true,
-    messages: [
-      { id: 1, fromMe: false, text: "Hey! Tito when do we plan to meet?", time: "10:21 AM" },
-      { id: 2, fromMe: false, text: "About the unit listing on Salitran I", time: "10:21 AM" },
-      { id: 3, fromMe: true, text: "Hi Lebrown! How about Saturday afternoon?", time: "10:25 AM", read: true },
-      { id: 4, fromMe: false, text: "Saturday works! What time?", time: "10:28 AM" },
-      { id: 5, fromMe: true, text: "Let's say 2pm. I'll send the exact pin location.", time: "10:30 AM", read: true },
-    ],
-  },
-  {
-    id: 2,
-    name: "Juan Smith",
-    preview: "Thanks for the help this morning!",
-    time: "10m ago",
-    unread: 2,
-    online: false,
-    messages: [
-      { id: 1, fromMe: false, text: "Hi, is the studio still available?", time: "Yesterday" },
-      { id: 2, fromMe: true, text: "Yes, it is! Want to book a viewing?", time: "Yesterday", read: true },
-      { id: 3, fromMe: false, text: "Thanks for the help this morning!", time: "9:44 AM" },
-    ],
-  },
-  {
-    id: 3,
-    name: "Ronelito Sonlito",
-    preview: "Tipid! Rivals daw! Bilisan mo!",
-    time: "1h ago",
-    unread: 1,
-    online: true,
-    messages: [
-      { id: 1, fromMe: false, text: "Tipid! Rivals daw! Bilisan mo!", time: "9:00 AM" },
-    ],
-  },
-  {
-    id: 4,
-    name: "Jhulong Berry",
-    preview: "Napaka TIPIP MO!",
-    time: "1m ago",
-    unread: 2,
-    online: false,
-    messages: [
-      { id: 1, fromMe: false, text: "Napaka TIPIP MO!", time: "Just now" },
-    ],
-  },
-];
+function formatTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffMins < 60 * 24) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
 
 export default function Messaging() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, profile, isAuthenticated } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [conversations, setConversations] = useState(MOCK_CONVERSATIONS);
-  const [activeId, setActiveId] = useState(null);
+  const [conversations, setConversations] = useState([]);
+  const [unreadMap, setUnreadMap] = useState(new Map());
+  const [convsLoading, setConvsLoading] = useState(true);
+  const [activeId, setActiveId] = useState(searchParams.get("c") ?? null);
+  const [messages, setMessages] = useState([]);
+  const [msgsLoading, setMsgsLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
+  const [sending, setSending] = useState(false);
+  const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
   const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
 
-  const filteredConversations = useMemo(() => {
-    if (!search.trim()) return conversations;
-    const q = search.toLowerCase();
-    return conversations.filter(
-      (c) => c.name.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q)
-    );
-  }, [conversations, search]);
+  // --- load conversations + unread counts ---
+  const loadConversations = useCallback(async () => {
+    if (!user?.id) return;
+    setConvsLoading(true);
+    const [{ data }, counts] = await Promise.all([
+      fetchConversations(user.id),
+      fetchUnreadCounts(user.id),
+    ]);
+    setConversations(data ?? []);
+    setUnreadMap(counts);
+    setConvsLoading(false);
+  }, [user?.id]);
 
-  const activeConv = conversations.find((c) => c.id === activeId);
+  useEffect(() => { loadConversations(); }, [loadConversations]);
 
-  // Mark messages read when opening a conversation
+  // Keep activeId in sync with URL ?c=<id>
+  useEffect(() => {
+    const c = searchParams.get("c");
+    if (c && c !== activeId) setActiveId(c);
+  }, [searchParams, activeId]);
+
+  // --- subscribe to conversation list updates ---
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = subscribeToConversations(user.id, (updated) => {
+      setConversations((prev) => {
+        const exists = prev.some((c) => c.id === updated.id);
+        const next = exists
+          ? prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
+          : [updated, ...prev];
+        return next.sort(
+          (a, b) => new Date(b.last_message_at ?? 0) - new Date(a.last_message_at ?? 0)
+        );
+      });
+    });
+    return () => ch.unsubscribe();
+  }, [user?.id]);
+
+  // --- load messages when a conversation is selected ---
   useEffect(() => {
     if (!activeId) return;
-    setConversations((prev) =>
-      prev.map((c) => (c.id === activeId ? { ...c, unread: 0 } : c))
-    );
-  }, [activeId]);
+    setMsgsLoading(true);
+    fetchMessages(activeId).then(({ data }) => {
+      setMessages(data ?? []);
+      setMsgsLoading(false);
+    });
+    // Mark read
+    if (user?.id) markMessagesRead(activeId, user.id);
+    // Clear unread badge for this conv locally
+    setUnreadMap((prev) => {
+      if (!prev.has(activeId)) return prev;
+      const next = new Map(prev);
+      next.delete(activeId);
+      return next;
+    });
+  }, [activeId, user?.id]);
 
-  // Auto-scroll to bottom on new messages
+  // --- realtime subscription for active conversation ---
+  useEffect(() => {
+    if (!activeId) return;
+    const ch = subscribeToMessages(activeId, (newMsg) => {
+      setMessages((prev) => {
+        // Avoid duplicates (optimistic + realtime)
+        if (prev.some((m) => m.id === newMsg.id)) return prev;
+        return [...prev, newMsg];
+      });
+      // Mark read immediately if still viewing
+      if (user?.id) markMessagesRead(activeId, user.id);
+    });
+    return () => ch.unsubscribe();
+  }, [activeId, user?.id]);
+
+  // --- auto-scroll ---
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeConv?.messages?.length]);
+  }, [messages.length]);
 
-  const handleSend = (e) => {
+  const handleSend = async (e) => {
     e?.preventDefault();
-    if (!activeConv || !draft.trim()) return;
-    const newMsg = {
-      id: Date.now(),
-      fromMe: true,
-      text: draft.trim(),
-      time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-      read: false,
-    };
-    setConversations((prev) =>
-      prev.map((c) =>
-        c.id === activeConv.id
-          ? { ...c, messages: [...c.messages, newMsg], preview: newMsg.text, time: "now" }
-          : c
-      )
-    );
+    if (!activeId || !draft.trim() || !user?.id || sending) return;
+    const text = draft.trim();
     setDraft("");
+    setSending(true);
+    // Optimistic update
+    const optimistic = {
+      id: `opt-${Date.now()}`,
+      conversation_id: activeId,
+      sender_id: user.id,
+      type: "text",
+      content: text,
+      is_read: false,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    const { data: saved } = await sendMessage(activeId, user.id, text);
+    if (saved) {
+      setMessages((prev) => prev.map((m) => (m.id === optimistic.id ? saved : m)));
+    }
+    setSending(false);
   };
+
+  const handleAttach = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !activeId || !user?.id || sending) return;
+    setSending(true);
+    const isImage = file.type.startsWith("image/");
+    const { data: saved, error } = await sendAttachmentMessage({
+      conversationId: activeId,
+      senderId: user.id,
+      file,
+      type: isImage ? "image" : "file",
+    });
+    if (saved) {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === saved.id)) return prev;
+        return [...prev, saved];
+      });
+    } else if (error) {
+      alert(error.message || "Failed to upload attachment.");
+    }
+    setSending(false);
+  };
+
+  // Normalize a conversation row to the shape the UI expects
+  const normalizeConv = useCallback((c) => {
+    const isTenant = c.tenant_id === user?.id;
+    const otherName  = isTenant ? (c.landlord_name  ?? "Landlord") : (c.tenant_name   ?? "Tenant");
+    const otherAvatar = isTenant ? c.landlord_avatar              : c.tenant_avatar;
+    return {
+      ...c,
+      name:    otherName,
+      avatar:  otherAvatar,
+      preview: c.last_message ?? "No messages yet",
+      time:    formatTime(c.last_message_at ?? c.created_at),
+      unread:  unreadMap.get(c.id) ?? 0,
+      online:  false,
+    };
+  }, [user?.id, unreadMap]);
+
+  const filteredConversations = useMemo(() => {
+    const normalized = conversations.map(normalizeConv);
+    if (!search.trim()) return normalized;
+    const q = search.toLowerCase();
+    return normalized.filter(
+      (c) => c.name.toLowerCase().includes(q) || (c.preview ?? "").toLowerCase().includes(q)
+    );
+  }, [conversations, normalizeConv, search]);
+
+  const activeConvRaw = conversations.find((c) => c.id === activeId);
+  const activeConv = activeConvRaw ? normalizeConv(activeConvRaw) : null;
+
+  const selectConversation = (id) => {
+    setActiveId(id);
+    setSearchParams(id ? { c: id } : {}, { replace: true });
+  };
+
+  // Build message display objects for the active conversation
+  const displayMessages = messages
+    .filter((m) => m.conversation_id === activeId)
+    .map((m) => ({
+      id:       m.id,
+      fromMe:   m.sender_id === user?.id,
+      type:     m.type ?? "text",
+      text:     m.content,
+      url:      m.url,
+      fileName: m.file_name,
+      time:     formatTime(m.created_at),
+      read:     m.is_read,
+    }));
 
   return (
     <div className="w-full min-h-screen bg-gray-100 flex flex-col">
@@ -157,9 +256,13 @@ export default function Messaging() {
 
             {/* Conversation list */}
             <div className="flex-1 overflow-y-auto">
-              {filteredConversations.length === 0 ? (
+              {convsLoading ? (
+                <div className="flex items-center justify-center py-12 text-slate-400">
+                  <Loader2 className="animate-spin mr-2" size={16} /> Loading…
+                </div>
+              ) : filteredConversations.length === 0 ? (
                 <div className="text-center text-sm text-slate-400 py-12 px-4">
-                  No conversations match your search.
+                  {search ? "No conversations match your search." : "No conversations yet."}
                 </div>
               ) : (
                 filteredConversations.map((c) => (
@@ -167,7 +270,7 @@ export default function Messaging() {
                     key={c.id}
                     conv={c}
                     active={c.id === activeId}
-                    onClick={() => setActiveId(c.id)}
+                    onClick={() => selectConversation(c.id)}
                   />
                 ))
               )}
@@ -179,14 +282,25 @@ export default function Messaging() {
             {activeConv ? (
               <ChatThread
                 conv={activeConv}
+                messages={displayMessages}
+                msgsLoading={msgsLoading}
                 draft={draft}
                 setDraft={setDraft}
                 onSend={handleSend}
+                onAttach={() => fileInputRef.current?.click()}
+                sending={sending}
                 messagesEndRef={messagesEndRef}
               />
             ) : (
               <EmptyState />
             )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,.pdf,.doc,.docx,.txt"
+              onChange={handleAttach}
+              style={{ display: "none" }}
+            />
           </section>
         </div>
       </div>
@@ -195,6 +309,7 @@ export default function Messaging() {
 }
 
 function ConversationRow({ conv, active, onClick }) {
+  const initials = conv.name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
   return (
     <button
       onClick={onClick}
@@ -203,8 +318,10 @@ function ConversationRow({ conv, active, onClick }) {
       }`}
     >
       <div className="relative flex-shrink-0">
-        <div className="w-11 h-11 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white font-semibold flex items-center justify-center text-sm shadow-sm">
-          {conv.name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase()}
+        <div className="w-11 h-11 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white font-semibold flex items-center justify-center text-sm shadow-sm overflow-hidden">
+          {conv.avatar ? (
+            <img src={conv.avatar} alt={conv.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+          ) : initials}
         </div>
         {conv.online && (
           <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white" />
@@ -246,15 +363,18 @@ function EmptyState() {
   );
 }
 
-function ChatThread({ conv, draft, setDraft, onSend, messagesEndRef }) {
+function ChatThread({ conv, messages, msgsLoading, draft, setDraft, onSend, onAttach, sending, messagesEndRef }) {
+  const initials = conv.name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
   return (
     <>
       {/* Chat header */}
       <div className="px-5 py-3 bg-white border-b border-gray-100 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="relative">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white font-semibold flex items-center justify-center text-sm">
-              {conv.name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase()}
+            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white font-semibold flex items-center justify-center text-sm overflow-hidden">
+              {conv.avatar ? (
+                <img src={conv.avatar} alt={conv.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+              ) : initials}
             </div>
             {conv.online && (
               <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white" />
@@ -263,22 +383,28 @@ function ChatThread({ conv, draft, setDraft, onSend, messagesEndRef }) {
           <div>
             <div className="font-semibold text-slate-900 text-sm">{conv.name}</div>
             <div className="text-[11px] text-slate-500">
-              {conv.online ? "Active now" : "Offline"}
+              {conv.listing_title ? conv.listing_title : (conv.online ? "Active now" : "Offline")}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <IconBtn aria-label="Voice call"><Phone size={16} /></IconBtn>
-          <IconBtn aria-label="Video call"><Video size={16} /></IconBtn>
           <IconBtn aria-label="More options"><MoreVertical size={16} /></IconBtn>
         </div>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
-        {conv.messages.map((m) => (
-          <MessageBubble key={m.id} m={m} />
-        ))}
+        {msgsLoading ? (
+          <div className="flex items-center justify-center py-8 text-slate-400">
+            <Loader2 className="animate-spin mr-2" size={16} /> Loading messages…
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="text-center text-sm text-slate-400 py-8">No messages yet. Say hello!</div>
+        ) : (
+          messages.map((m) => (
+            <MessageBubble key={m.id} m={m} />
+          ))
+        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -289,7 +415,9 @@ function ChatThread({ conv, draft, setDraft, onSend, messagesEndRef }) {
       >
         <button
           type="button"
-          className="text-slate-400 hover:text-slate-700 p-2 rounded-full hover:bg-slate-100 transition"
+          onClick={onAttach}
+          disabled={sending}
+          className="text-slate-400 hover:text-slate-700 p-2 rounded-full hover:bg-slate-100 transition disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label="Attach file"
         >
           <Paperclip size={18} />
@@ -312,16 +440,47 @@ function ChatThread({ conv, draft, setDraft, onSend, messagesEndRef }) {
         </div>
         <button
           type="submit"
-          disabled={!draft.trim()}
+          disabled={!draft.trim() || sending}
           className="w-10 h-10 rounded-full text-white flex items-center justify-center transition disabled:opacity-40 disabled:cursor-not-allowed"
           style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
           aria-label="Send"
         >
-          <Send size={16} />
+          {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
         </button>
       </form>
     </>
   );
+}
+
+function MessageBody({ m, mine }) {
+  if (m.type === "image" && m.url) {
+    return (
+      <a href={m.url} target="_blank" rel="noreferrer" className="block">
+        <img
+          src={m.url}
+          alt={m.fileName || "attachment"}
+          className="max-w-[260px] max-h-[320px] rounded-xl object-cover"
+        />
+      </a>
+    );
+  }
+  if (m.type === "file" && m.url) {
+    return (
+      <a
+        href={m.url}
+        target="_blank"
+        rel="noreferrer"
+        className={`flex items-center gap-2 ${mine ? "text-white" : "text-slate-800"}`}
+      >
+        <FileText size={18} className={mine ? "text-white" : "text-[#EC6138]"} />
+        <div className="min-w-0">
+          <p className="text-sm font-semibold truncate">{m.fileName || "Attachment"}</p>
+          <p className={`text-[11px] ${mine ? "text-white/80" : "text-slate-500"}`}>Tap to open</p>
+        </div>
+      </a>
+    );
+  }
+  return <span>{m.text}</span>;
 }
 
 function MessageBubble({ m }) {
@@ -333,7 +492,7 @@ function MessageBubble({ m }) {
             className="rounded-2xl rounded-br-sm px-4 py-2 text-sm text-white shadow-sm"
             style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
           >
-            {m.text}
+            <MessageBody m={m} mine={true} />
           </div>
           <div className="text-[10px] text-slate-400 mt-1 mr-1 flex items-center gap-1 justify-end">
             {m.time}
@@ -351,7 +510,7 @@ function MessageBubble({ m }) {
     <div className="flex justify-start">
       <div className="max-w-[70%]">
         <div className="bg-white border border-slate-100 rounded-2xl rounded-bl-sm px-4 py-2 text-sm text-slate-800 shadow-sm">
-          {m.text}
+          <MessageBody m={m} mine={false} />
         </div>
         <div className="text-[10px] text-slate-400 mt-1 ml-1">{m.time}</div>
       </div>

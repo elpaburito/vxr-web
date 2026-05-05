@@ -34,7 +34,6 @@ export default function LoginPage() {
     password: "",
     confirmPassword: "",
     phone: "",
-    role: "tenant",
   });
   const [signupError, setSignupError] = useState("");
   const [signupInfo, setSignupInfo] = useState("");
@@ -63,7 +62,7 @@ export default function LoginPage() {
     setSignupError("");
     setSignupInfo("");
 
-    const { fullName, email, password, confirmPassword, phone, role } = signupForm;
+    const { fullName, email, password, confirmPassword, phone } = signupForm;
 
     if (!fullName || !email || !password || !confirmPassword) {
       setSignupError("Please fill in all required fields.");
@@ -86,7 +85,6 @@ export default function LoginPage() {
         password,
         fullName: fullName.trim(),
         phone: phoneFull,
-        role,
       });
 
       if (result?.session) {
@@ -101,7 +99,6 @@ export default function LoginPage() {
           password: "",
           confirmPassword: "",
           phone: "",
-          role: "tenant",
         });
       }
     } catch (err) {
@@ -339,47 +336,6 @@ export default function LoginPage() {
             </div>
 
             <form onSubmit={handleSignup} className="p-8 space-y-4">
-              {/* Role selector */}
-              <div>
-                <label className="text-xs font-semibold text-slate-700 tracking-wide">
-                  I'M SIGNING UP AS A
-                </label>
-                <div className="mt-2 grid grid-cols-2 gap-3">
-                  {[
-                    { value: "tenant", label: "Tenant", desc: "I'm looking to rent" },
-                    { value: "landlord", label: "Landlord", desc: "I'm listing properties" },
-                  ].map((r) => {
-                    const active = signupForm.role === r.value;
-                    return (
-                      <button
-                        key={r.value}
-                        type="button"
-                        onClick={() =>
-                          setSignupForm({ ...signupForm, role: r.value })
-                        }
-                        className={`relative text-left p-4 rounded-xl border-2 transition-all ${
-                          active
-                            ? "border-[#EC6138] bg-orange-50/50"
-                            : "border-slate-200 hover:border-slate-300"
-                        }`}
-                      >
-                        <div className="font-semibold text-slate-900 text-sm">
-                          {r.label}
-                        </div>
-                        <div className="text-xs text-slate-500 mt-0.5">
-                          {r.desc}
-                        </div>
-                        {active && (
-                          <div className="absolute top-3 right-3 w-5 h-5 rounded-full bg-[#EC6138] flex items-center justify-center">
-                            <Check className="w-3 h-3 text-white" strokeWidth={3} />
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               {/* Full Name */}
               <div>
                 <label className="text-xs font-semibold text-slate-700 tracking-wide">

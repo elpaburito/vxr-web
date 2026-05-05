@@ -1,16 +1,20 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Home, Bell, ArrowLeft, Download, Check, CreditCard,
   FileText, AlertCircle, Edit3, Shield, Building2, Calendar,
-  X,
+  X, Loader2, Hourglass,
 } from "lucide-react";
 import ProfileDropdown from "./components/ProfileDropdown.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import {
-  loadContract, saveContract, buildDefaultContract,
-  getContractStatus, CONTRACT_TYPES,
-} from "./lib/contractStorage";
+  fetchContractById, updateContract, signContract, resetContractSignatures,
+  recordContractPayment, getContractStatus, CONTRACT_TYPES,
+  normalizeContract, denormalizeContractPatch, uploadedContractInfo,
+} from "./lib/contractsService";
+import {
+  resolveTerms, listingTypeFromContract,
+} from "./lib/contractTemplates";
 
 const STATUS_BADGE = {
   draft:            { label: "Draft",                   bg: "#F1F5F9", color: "#475569" },
@@ -26,25 +30,84 @@ export default function ContractView() {
   const { user, profile, isAuthenticated } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
-  const [contract, setContract] = useState(() => {
-    return loadContract(id) || buildDefaultContract(id);
-  });
+  const [contract, setContract] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [signModal, setSignModal] = useState(null); // 'landlord' | 'tenant' | null
 
+  // Load contract from Supabase. Two self-healing steps run on load:
+  //   1. If the contract.type drifted from the listing's listing_type
+  //      (older contracts hardcoded "fixed_term"), realign + persist.
+  //   2. If the contract was created before buildContractFromApplication
+  //      knew how to read listing_financials, monthly_rent will be 0.
+  //      Backfill it from the listing so the tenant's payment screen
+  //      doesn't show ₱0 due.
   useEffect(() => {
-    if (contract) saveContract(id, contract);
-  }, [contract, id]);
+    if (!id) return;
+    setLoading(true);
+    fetchContractById(id).then(({ data, error }) => {
+      if (error || !data) { setNotFound(true); setLoading(false); return; }
+      const normalized = normalizeContract(data);
 
-  if (!contract) {
+      const listingType = data.listings?.listing_type;
+      const expectedType = listingType === "rent" ? "month_to_month" : "fixed_term";
+      const patch = {};
+      if (listingType && normalized.type !== expectedType) {
+        normalized.type = expectedType;
+        patch.listing_type = listingType;
+      }
+
+      const fin = Array.isArray(data.listings?.listing_financials)
+        ? data.listings.listing_financials[0]
+        : data.listings?.listing_financials;
+      const listingRent     = Number(fin?.monthly_rent     ?? 0);
+      const listingDeposit  = Number(fin?.security_deposit ?? 0);
+      const listingAdvance  = Number(fin?.advance_payment  ?? 0);
+      if (listingRent > 0 && Number(normalized.monthlyRent) === 0) {
+        normalized.monthlyRent     = listingRent;
+        normalized.securityDeposit = listingDeposit > 0 ? listingDeposit : listingRent;
+        normalized.advanceRent     = listingAdvance > 0 ? listingAdvance : listingRent;
+        patch.monthly_rent     = normalized.monthlyRent;
+        patch.security_deposit = normalized.securityDeposit;
+        patch.advance_rent     = normalized.advanceRent;
+      }
+
+      if (Object.keys(patch).length > 0) {
+        updateContract(id, patch).catch(() => {});
+      }
+
+      setContract(normalized);
+      setLoading(false);
+    });
+  }, [id]);
+
+  if (loading) {
     return (
-      <NotFound onBack={() => navigate("/enlistment")} />
+      <div className="w-full min-h-screen bg-gray-50 flex items-center justify-center text-gray-500">
+        <Loader2 className="animate-spin mr-2" size={18} /> Loading contract…
+      </div>
     );
   }
 
+  if (notFound || !contract) {
+    return <NotFound onBack={() => navigate("/enlistment")} />;
+  }
+
   const status = getContractStatus(contract);
-  const meta = CONTRACT_TYPES[contract.type];
+  const meta = CONTRACT_TYPES[contract.type] ?? CONTRACT_TYPES.fixed_term;
   const isLocked = !!(contract.landlordSignature || contract.tenantSignature);
+  // The contract type follows the listing's listing_type — it is not a
+  // free toggle. The pill below shows the type without inviting changes.
+  const uploaded = uploadedContractInfo(contract.listings);
+
+  // Role gate: a user may only sign as the role they actually are. The
+  // landlord cannot sign as the tenant and vice versa, regardless of
+  // which signature is missing.
+  const isLandlord = !!user?.id && user.id === contract.landlordId;
+  const isTenant   = !!user?.id && user.id === contract.tenantId;
+  const myRole = isLandlord ? "landlord" : isTenant ? "tenant" : null;
 
   const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
 
@@ -52,17 +115,40 @@ export default function ContractView() {
     setContract((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleType = (type) => {
-    if (isLocked) return;
-    setContract((prev) => ({ ...prev, type }));
+  const requestSign = (role) => {
+    // Final guard — ignore any path that would let one party sign as the
+    // other. The buttons below are also conditionally rendered, but this
+    // protects against stray callers / programmatic clicks.
+    if (role !== myRole) return;
+    setSignModal(role);
   };
 
-  const handleSign = (role, name) => {
-    const signedAt = new Date().toISOString();
-    setContract((prev) => ({
-      ...prev,
-      [role === "landlord" ? "landlordSignature" : "tenantSignature"]: { name, signedAt },
-    }));
+  const handleSaveEdits = async () => {
+    setSaving(true);
+    const patch = denormalizeContractPatch(contract);
+    const { error } = await updateContract(id, patch);
+    if (error) alert("Failed to save: " + error.message);
+    setEditing(false);
+    setSaving(false);
+  };
+
+  const handleSign = async (role, name, signatureDataUrl) => {
+    const { data: saved, error } = await signContract(id, role, name, signatureDataUrl);
+    if (error) { alert("Signature failed: " + error.message); return; }
+    // Reload from returned row so status and signatures are accurate
+    if (saved) {
+      setContract(normalizeContract(saved));
+    } else {
+      const signedAt = new Date().toISOString();
+      setContract((prev) => ({
+        ...prev,
+        [role === "landlord" ? "landlordSignature" : "tenantSignature"]: {
+          name,
+          signedAt,
+          image: signatureDataUrl ?? null,
+        },
+      }));
+    }
     setSignModal(null);
   };
 
@@ -74,15 +160,11 @@ export default function ContractView() {
     navigate(`/contract/${id}/pay`);
   };
 
-  const handleResetSignatures = () => {
-    if (!window.confirm("Clear both signatures? You'll need to sign again."))
-      return;
-    setContract((prev) => ({
-      ...prev,
-      landlordSignature: null,
-      tenantSignature: null,
-      payment: null,
-    }));
+  const handleResetSignatures = async () => {
+    if (!window.confirm("Clear both signatures? You'll need to sign again.")) return;
+    const { error } = await resetContractSignatures(id);
+    if (error) { alert("Reset failed: " + error.message); return; }
+    setContract((prev) => ({ ...prev, landlordSignature: null, tenantSignature: null, payment: null, status: "awaiting_tenant" }));
   };
 
   const inputCls = (extra = "") =>
@@ -110,24 +192,15 @@ export default function ContractView() {
             {STATUS_BADGE[status].label}
           </span>
 
-          {/* Type tabs */}
-          <div className="ml-auto inline-flex bg-slate-100 rounded-full p-1">
-            {Object.entries(CONTRACT_TYPES).map(([key, t]) => {
-              const active = contract.type === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => handleType(key)}
-                  disabled={isLocked}
-                  className={`px-3.5 py-1 text-xs font-semibold rounded-full transition disabled:opacity-50 disabled:cursor-not-allowed ${
-                    active ? "bg-white shadow text-slate-900" : "text-slate-500 hover:text-slate-900"
-                  }`}
-                >
-                  {t.short}
-                </button>
-              );
-            })}
+          {/* Contract type — read-only. The listing's listing_type
+              determines this; landlords change it on the listing, not here. */}
+          <div
+            className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold"
+            style={{ background: `${meta.accent}14`, color: meta.accent }}
+            title="Contract type is set by the listing"
+          >
+            <FileText size={12} />
+            {meta.short ?? CONTRACT_TYPES[contract.type]?.short}
           </div>
         </div>
       </div>
@@ -138,42 +211,82 @@ export default function ContractView() {
           className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden print:shadow-none print:border-0 print:rounded-none"
           id="contract-doc"
         >
-          {/* Title block */}
-          <div
-            className="px-8 py-7 text-white"
-            style={{
-              background: `linear-gradient(135deg, ${meta.accent}, ${meta.accent}dd)`,
-            }}
-          >
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-center">
-              {meta.title}
-            </h1>
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="opacity-80 text-[11px] uppercase tracking-wider mb-0.5">
-                  This Agreement is entered into on
+          {/* Title block — only when there is no uploaded contract.
+              When the landlord supplied their own PDF, the gradient
+              banner + parties grid below would look like a SECOND
+              contract sitting on top of the real one (the embedded
+              PDF). We render a compact summary card instead. */}
+          {!uploaded && (
+            <div
+              className="px-8 py-7 text-white"
+              style={{
+                background: `linear-gradient(135deg, ${meta.accent}, ${meta.accent}dd)`,
+              }}
+            >
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-center">
+                {meta.title}
+              </h1>
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="opacity-80 text-[11px] uppercase tracking-wider mb-0.5">
+                    This Agreement is entered into on
+                  </div>
+                  {editing ? (
+                    <input
+                      type="date"
+                      value={contract.enteredOn}
+                      onChange={(e) => handleField("enteredOn", e.target.value)}
+                      className="bg-white/20 backdrop-blur border border-white/30 rounded px-2 py-1 text-white text-sm"
+                    />
+                  ) : (
+                    <div className="font-semibold">{formatDate(contract.enteredOn)}</div>
+                  )}
                 </div>
-                {editing ? (
-                  <input
-                    type="date"
-                    value={contract.enteredOn}
-                    onChange={(e) => handleField("enteredOn", e.target.value)}
-                    className="bg-white/20 backdrop-blur border border-white/30 rounded px-2 py-1 text-white text-sm"
-                  />
-                ) : (
-                  <div className="font-semibold">{formatDate(contract.enteredOn)}</div>
-                )}
-              </div>
-              <div className="md:text-right">
-                <div className="opacity-80 text-[11px] uppercase tracking-wider mb-0.5">
-                  Contract Type
+                <div className="md:text-right">
+                  <div className="opacity-80 text-[11px] uppercase tracking-wider mb-0.5">
+                    Contract Type
+                  </div>
+                  <div className="font-semibold">{meta.contractType}</div>
                 </div>
-                <div className="font-semibold">{meta.contractType}</div>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Parties & Property */}
+          {uploaded && (
+            <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/60">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="min-w-0">
+                  <p className="text-[10.5px] uppercase tracking-wider font-bold text-slate-500">
+                    Move-in Summary
+                  </p>
+                  <p className="text-base font-bold text-slate-900 mt-0.5 truncate">
+                    {contract.propertyAddress || contract.propertyType || "Rental"}
+                  </p>
+                  <p className="text-[12px] text-slate-500 mt-0.5">
+                    {[contract.landlordName, contract.tenantName].filter(Boolean).join(" · ")}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10.5px] uppercase tracking-wider font-bold text-slate-500">
+                    Total move-in
+                  </p>
+                  <p className="text-lg font-bold text-slate-900 mt-0.5">
+                    ₱{(Number(contract.monthlyRent) + Number(contract.securityDeposit) + Number(contract.advanceRent)).toLocaleString()}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    {formatDate(contract.startDate)}{contract.type === "fixed_term" ? ` → ${formatDate(contract.endDate)}` : " · month-to-month"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Parties & Property — only for the default in-app template.
+              When an uploaded contract is the source of truth, the
+              landlord can still edit these via the Edit button (they
+              feed the move-in total + payment), but they're hidden by
+              default to avoid the "two contracts" look. */}
+          {!uploaded && (
           <div className="px-8 py-6">
             <SectionHead accent={meta.accent}>Parties &amp; Property Details</SectionHead>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 mt-4">
@@ -290,14 +403,25 @@ export default function ContractView() {
               />
             </div>
           </div>
+          )}
 
-          {/* Terms */}
+          {/* Terms — when the landlord uploaded a custom contract file,
+              that file IS the binding contract. Show it inline (PDF iframe
+              when possible) and skip the in-app default terms so the
+              tenant doesn't see two competing sets of clauses. */}
           <div className="px-8 py-6 border-t border-slate-100">
-            <SectionHead accent={meta.accent}>Terms and Conditions</SectionHead>
-            {contract.type === "fixed_term" ? (
-              <FixedTermTerms contract={contract} />
+            <SectionHead accent={meta.accent}>
+              {uploaded ? "Contract Document" : "Terms and Conditions"}
+            </SectionHead>
+            {uploaded ? (
+              <UploadedContractViewer info={uploaded} />
             ) : (
-              <MonthToMonthTerms contract={contract} />
+              <TermsList
+                terms={resolveTerms(
+                  listingTypeFromContract(contract),
+                  contract.listings?.terms_override,
+                )}
+              />
             )}
           </div>
 
@@ -314,13 +438,15 @@ export default function ContractView() {
                 role="landlord"
                 label="Landlord's Signature"
                 signature={contract.landlordSignature}
-                onSignClick={() => setSignModal("landlord")}
+                canSign={isLandlord}
+                onSignClick={() => requestSign("landlord")}
               />
               <SignatureBlock
                 role="tenant"
                 label="Tenant's Signature"
                 signature={contract.tenantSignature}
-                onSignClick={() => setSignModal("tenant")}
+                canSign={isTenant}
+                onSignClick={() => requestSign("tenant")}
               />
             </div>
           </div>
@@ -335,12 +461,12 @@ export default function ContractView() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => setEditing((e) => !e)}
-              disabled={isLocked}
+              onClick={() => editing ? handleSaveEdits() : setEditing(true)}
+              disabled={isLocked || saving}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg border border-slate-200 hover:bg-slate-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Edit3 size={14} />
-              {editing ? "Done editing" : "Edit details"}
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Edit3 size={14} />}
+              {editing ? (saving ? "Saving…" : "Save edits") : "Edit details"}
             </button>
             <button
               type="button"
@@ -368,36 +494,57 @@ export default function ContractView() {
                 Paid · Receipt {contract.payment.transactionId}
               </div>
             ) : status === "both_signed" ? (
-              <button
-                type="button"
-                onClick={handleProceedPayment}
-                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-lg shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all"
-                style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
-              >
-                <CreditCard size={14} />
-                Proceed to Payment
-              </button>
+              isTenant ? (
+                <button
+                  type="button"
+                  onClick={handleProceedPayment}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-lg shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all"
+                  style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+                >
+                  <CreditCard size={14} />
+                  Proceed to Payment
+                </button>
+              ) : (
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 bg-slate-50 border border-slate-200">
+                  <Hourglass size={14} />
+                  Awaiting tenant payment
+                </div>
+              )
             ) : (
               <>
-                {!contract.landlordSignature && (
+                {isLandlord && !contract.landlordSignature && (
                   <button
                     type="button"
-                    onClick={() => setSignModal("landlord")}
+                    onClick={() => requestSign("landlord")}
                     className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-sm hover:shadow-md transition"
                     style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
                   >
                     Sign as Landlord
                   </button>
                 )}
-                {!contract.tenantSignature && (
+                {isTenant && !contract.tenantSignature && (
                   <button
                     type="button"
-                    onClick={() => setSignModal("tenant")}
+                    onClick={() => requestSign("tenant")}
                     className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-sm hover:shadow-md transition"
                     style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
                   >
                     Sign as Tenant
                   </button>
+                )}
+                {/* Tell each party who they're waiting on, instead of
+                    silently hiding the bar. */}
+                {isLandlord && contract.landlordSignature && !contract.tenantSignature && (
+                  <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 bg-slate-50 border border-slate-200">
+                    <Hourglass size={14} />
+                    Awaiting tenant signature
+                  </div>
+                )}
+                {isTenant && contract.tenantSignature && !contract.landlordSignature && (
+                  <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 bg-slate-50 border border-slate-200">
+                    <Hourglass size={14} />
+                    Awaiting landlord signature
+                  </div>
                 )}
               </>
             )}
@@ -413,7 +560,7 @@ export default function ContractView() {
           }
           accent={meta.accent}
           onCancel={() => setSignModal(null)}
-          onConfirm={(name) => handleSign(signModal, name)}
+          onConfirm={(name, signatureDataUrl) => handleSign(signModal, name, signatureDataUrl)}
         />
       )}
 
@@ -478,19 +625,29 @@ function DisplayField({ label, value }) {
   );
 }
 
-function SignatureBlock({ role, label, signature, onSignClick }) {
+function SignatureBlock({ role, label, signature, canSign, onSignClick }) {
   if (signature) {
     return (
       <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/60">
         <div className="text-[10.5px] uppercase tracking-wider font-semibold text-slate-400 mb-2">
           {label}
         </div>
-        <div
-          className="text-[28px] leading-none italic mb-3 text-slate-800"
-          style={{ fontFamily: "'Brush Script MT', 'Lucida Handwriting', cursive" }}
-        >
-          {signature.name}
-        </div>
+        {signature.image ? (
+          <div className="bg-white rounded-md border border-slate-200 p-2 mb-3 flex items-center justify-center min-h-[88px]">
+            <img
+              src={signature.image}
+              alt={`${role} signature`}
+              className="max-h-[80px] w-auto"
+            />
+          </div>
+        ) : (
+          <div
+            className="text-[28px] leading-none italic mb-3 text-slate-800"
+            style={{ fontFamily: "'Brush Script MT', 'Lucida Handwriting', cursive" }}
+          >
+            {signature.name}
+          </div>
+        )}
         <div className="border-t border-slate-300 pt-2 text-[12px] text-slate-600">
           <div><span className="text-slate-400">Printed Name:</span> {signature.name}</div>
           <div><span className="text-slate-400">Date:</span> {formatDateTime(signature.signedAt)}</div>
@@ -510,13 +667,127 @@ function SignatureBlock({ role, label, signature, onSignClick }) {
       <div className="flex-1 min-h-[80px] flex items-center justify-center text-[12px] text-slate-400 italic mb-3">
         Awaiting signature…
       </div>
-      <button
-        type="button"
-        onClick={onSignClick}
-        className="text-xs font-semibold py-2 rounded-md border border-slate-200 bg-white hover:bg-slate-50 transition text-slate-700 print:hidden"
+      {canSign ? (
+        <button
+          type="button"
+          onClick={onSignClick}
+          className="text-xs font-semibold py-2 rounded-md border border-slate-200 bg-white hover:bg-slate-50 transition text-slate-700 print:hidden"
+        >
+          Sign as {role === "landlord" ? "Landlord" : "Tenant"}
+        </button>
+      ) : (
+        <div className="text-[11px] text-slate-400 text-center italic print:hidden">
+          Only the {role} can sign here.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Drawable signature canvas. Captures mouse + touch input, lets the
+ * user clear and redraw, and emits a `data:image/png;base64,...` URL
+ * via `onChange` that we store directly in the contract row.
+ *
+ * Fixed-resolution backing canvas (480×160 CSS, 2x device pixel ratio
+ * for crisp lines on HiDPI screens). The canvas uses a transparent
+ * background so the signed signature renders cleanly on top of either
+ * the white signature card or the embedded PDF region.
+ */
+function SignaturePad({ value, onChange, accent }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const last = useRef({ x: 0, y: 0 });
+  const [hasInk, setHasInk] = useState(!!value);
+
+  // Initialize canvas once. We size from CSS bounds × DPR so strokes
+  // stay sharp on retina/HiDPI screens; otherwise the lines look pixelated.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width  = Math.round(rect.width  * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#1A1A2E";
+  }, []);
+
+  const localXY = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    const point = e.touches ? e.touches[0] : e;
+    return { x: point.clientX - rect.left, y: point.clientY - rect.top };
+  };
+
+  const begin = (e) => {
+    e.preventDefault();
+    drawing.current = true;
+    last.current = localXY(e);
+  };
+
+  const move = (e) => {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const { x, y } = localXY(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.beginPath();
+    ctx.moveTo(last.current.x, last.current.y);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    last.current = { x, y };
+    if (!hasInk) setHasInk(true);
+  };
+
+  const end = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    const dataUrl = canvasRef.current.toDataURL("image/png");
+    onChange?.(dataUrl);
+  };
+
+  const clear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasInk(false);
+    onChange?.(null);
+  };
+
+  return (
+    <div>
+      <div
+        className="rounded-lg overflow-hidden border-2 bg-white"
+        style={{ borderColor: hasInk ? accent : "#CBD5E1", borderStyle: hasInk ? "solid" : "dashed" }}
       >
-        Sign as {role === "landlord" ? "Landlord" : "Tenant"}
-      </button>
+        <canvas
+          ref={canvasRef}
+          className="block w-full cursor-crosshair touch-none"
+          style={{ height: 160 }}
+          onMouseDown={begin}
+          onMouseMove={move}
+          onMouseUp={end}
+          onMouseLeave={end}
+          onTouchStart={begin}
+          onTouchMove={move}
+          onTouchEnd={end}
+        />
+      </div>
+      <div className="flex items-center justify-between mt-2">
+        <span className="text-[11px] text-slate-400">
+          Sign with your mouse, trackpad, or finger
+        </span>
+        <button
+          type="button"
+          onClick={clear}
+          className="text-xs font-semibold text-slate-600 px-3 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50"
+        >
+          Clear
+        </button>
+      </div>
     </div>
   );
 }
@@ -524,6 +795,9 @@ function SignatureBlock({ role, label, signature, onSignClick }) {
 function SignModal({ role, defaultName, accent, onCancel, onConfirm }) {
   const [name, setName] = useState(defaultName ?? "");
   const [agreed, setAgreed] = useState(false);
+  const [signatureDataUrl, setSignatureDataUrl] = useState(null);
+
+  const canSubmit = !!name.trim() && agreed && !!signatureDataUrl;
 
   return (
     <div
@@ -531,7 +805,7 @@ function SignModal({ role, defaultName, accent, onCancel, onConfirm }) {
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
+        className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between mb-4">
@@ -550,8 +824,8 @@ function SignModal({ role, defaultName, accent, onCancel, onConfirm }) {
         </div>
 
         <p className="text-sm text-slate-600 leading-relaxed">
-          Type your full legal name below to e-sign this contract. Your signature
-          will be timestamped and recorded.
+          Draw your signature below and type your full legal name. Your signature
+          image is recorded onto the contract and timestamped.
         </p>
 
         <div className="mt-4">
@@ -568,19 +842,16 @@ function SignModal({ role, defaultName, accent, onCancel, onConfirm }) {
           />
         </div>
 
-        {name.trim() && (
-          <div className="mt-4 p-4 rounded-lg bg-slate-50 border border-slate-200">
-            <div className="text-[10.5px] uppercase tracking-wider font-semibold text-slate-400 mb-1">
-              Signature preview
-            </div>
-            <div
-              className="text-[32px] leading-none italic text-slate-800"
-              style={{ fontFamily: "'Brush Script MT', 'Lucida Handwriting', cursive" }}
-            >
-              {name}
-            </div>
-          </div>
-        )}
+        <div className="mt-4">
+          <label className="text-[10.5px] uppercase tracking-wider font-semibold text-slate-400 mb-1.5 block">
+            Draw Signature
+          </label>
+          <SignaturePad
+            value={signatureDataUrl}
+            onChange={setSignatureDataUrl}
+            accent={accent}
+          />
+        </div>
 
         <label className="mt-4 flex items-start gap-2.5 cursor-pointer">
           <input
@@ -604,8 +875,8 @@ function SignModal({ role, defaultName, accent, onCancel, onConfirm }) {
             Cancel
           </button>
           <button
-            onClick={() => onConfirm(name.trim())}
-            disabled={!name.trim() || !agreed}
+            onClick={() => canSubmit && onConfirm(name.trim(), signatureDataUrl)}
+            disabled={!canSubmit}
             className="h-10 rounded-lg text-white font-semibold transition hover:opacity-90 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ background: `linear-gradient(135deg, ${accent}, ${accent}dd)` }}
           >
@@ -636,60 +907,89 @@ function NotFound({ onBack }) {
 }
 
 // ============================================================================
-// Terms (compact rendering of the full PDF text — read-only legal copy)
+// Terms — driven by lib/contractTemplates with terms_override support
 // ============================================================================
 
-function FixedTermTerms({ contract }) {
-  const items = [
-    ["Fixed-Term Lease", `This Lease Agreement is binding for the duration stated above. Neither party may terminate this agreement before the end date without mutual written consent or valid legal grounds. Early termination by the Tenant shall result in forfeiture of the security deposit unless otherwise agreed in writing.`],
-    ["Rent Payment", `The Tenant agrees to pay the monthly rent of PHP ${Number(contract.monthlyRent).toLocaleString()} on or before the due date each month. Payments shall be made via ${contract.paymentMethod} to ${contract.accountInfo}. A late payment fee of PHP ${contract.lateFee} per day shall be charged for payments made after the grace period.`],
-    ["Security Deposit", `The Tenant has paid a security deposit of PHP ${Number(contract.securityDeposit).toLocaleString()}. The deposit shall be returned within 30 days after the lease ends, less any deductions for unpaid rent, damages beyond normal wear and tear, or outstanding utility bills.`],
-    ["Rent Increase", `The monthly rent is fixed for the entire lease term and shall not be increased by the Landlord during this period. Any rent adjustment shall only take effect upon renewal of this agreement, subject to prior written notice of at least 60 days before the lease expiry.`],
-    ["Use of Premises", `The leased premises shall be used exclusively as a private residential dwelling. The Tenant shall not use the property for any commercial, illegal, or immoral activities. Subletting or assignment of this lease requires the prior written consent of the Landlord.`],
-    ["Utilities & Services", `The Tenant shall be responsible for the payment of utilities (Electricity, Water, Internet, Cable). The Tenant must settle all utility accounts before vacating the premises.`],
-    ["Maintenance & Repairs", `The Tenant agrees to keep the premises clean and in good condition. Minor repairs costing below PHP ${contract.minorRepairsThreshold} shall be the Tenant's responsibility. Major structural repairs shall be borne by the Landlord, provided the Tenant gives prompt written notice.`],
-    ["House Rules", `(a) No pets unless explicitly permitted in writing; (b) No excessive noise between ${contract.quietHours}; (c) Overnight guests staying more than ${contract.overnightGuestThreshold} consecutive days must be declared; (d) Proper waste disposal must be observed; (e) Common areas must be kept clean and unobstructed.`],
-    ["Lease Renewal", `At least 60 days before the lease expiry, either party must notify the other of their intention to renew or terminate. If no notice is given, the lease shall convert to a month-to-month rental agreement under the same terms.`],
-    ["Termination & Eviction", `The Landlord may terminate this lease and require the Tenant to vacate under: (a) Non-payment of rent for two or more consecutive months; (b) Serious breach of any provision; (c) Use of the property for illegal activities. Eviction proceedings shall follow Philippine law including R.A. 9653.`],
-    ["Governing Law", `This Agreement shall be governed by the laws of the Republic of the Philippines. Disputes shall first be resolved through amicable settlement; otherwise submitted to the courts of ${contract.governingCity}, Philippines.`],
-    ["Entire Agreement", `This Agreement constitutes the entire agreement between the parties and supersedes all prior discussions. Any amendment must be in writing and signed by both parties.`],
-  ];
-  return <TermsList items={items} />;
-}
-
-function MonthToMonthTerms({ contract }) {
-  const items = [
-    ["Month-to-Month Tenancy", `This Rental Agreement creates a month-to-month tenancy commencing on the start date above. The agreement shall automatically renew each month unless terminated by either party with the required written notice. There is no fixed end date; the tenancy continues indefinitely until properly terminated.`],
-    ["Termination Notice", `Either party may terminate this Agreement by providing at least 30 days written notice. Notice must be delivered in person, by registered mail, or via the platform's official messaging system. The tenancy ends on the last day of the notice period.`],
-    ["Rent Payment", `The Tenant agrees to pay the monthly rent of PHP ${Number(contract.monthlyRent).toLocaleString()} on or before the due date each month. Payments shall be made via ${contract.paymentMethod} to ${contract.accountInfo}. A late payment fee of PHP ${contract.lateFee} per day shall be charged after the grace period.`],
-    ["Rent Adjustment", `The Landlord reserves the right to adjust the monthly rent by providing the Tenant with at least 30 days prior written notice. The Tenant may accept the new rent or terminate the agreement in accordance with the termination notice clause. No adjustment shall violate R.A. 9653.`],
-    ["Security Deposit", `The Tenant has paid a security deposit of PHP ${Number(contract.securityDeposit).toLocaleString()}. The deposit shall be returned within 30 days after the Tenant fully vacates the premises, less lawful deductions. The deposit shall not be applied as payment for the last month's rent without written consent.`],
-    ["Use of Premises", `The premises shall be used exclusively as a private residential dwelling. Commercial use, subletting, and assignment are prohibited without the Landlord's prior written consent.`],
-    ["Utilities & Services", `The Tenant shall be responsible for utilities (Electricity, Water, Internet, Cable). All utility accounts must be settled in full before the Tenant vacates the premises.`],
-    ["Maintenance & Repairs", `The Tenant shall maintain the premises in a clean and habitable condition. Minor repairs below PHP ${contract.minorRepairsThreshold} are the Tenant's responsibility. No structural alterations may be made without written approval.`],
-    ["House Rules", `(a) Refrain from creating excessive noise between ${contract.quietHours}; (b) Properly dispose of garbage; (c) Declare guests staying beyond ${contract.overnightGuestThreshold} consecutive days; (d) Not keep pets unless specifically permitted in writing; (e) Maintain shared areas in clean condition.`],
-    ["Landlord Access", `The Landlord may enter the premises for inspection, repairs, or showing to prospective tenants with at least 24 hours prior notice, except in cases of emergency.`],
-    ["Non-Payment & Breach", `Failure to pay rent for two consecutive months, or serious breach of any provision, shall entitle the Landlord to terminate this Agreement and initiate eviction proceedings under Philippine law.`],
-    ["Governing Law", `This Agreement shall be governed by the laws of the Republic of the Philippines, including R.A. 9653. Disputes shall first be resolved through amicable settlement; otherwise submitted to courts of ${contract.governingCity}, Philippines.`],
-    ["Entire Agreement", `This Agreement represents the full understanding between the parties. Any amendment must be made in writing and signed by both parties.`],
-  ];
-  return <TermsList items={items} />;
-}
-
-function TermsList({ items }) {
+function TermsList({ terms }) {
+  if (!terms?.length) return null;
   return (
     <ol className="mt-4 space-y-3.5">
-      {items.map(([head, body], i) => (
-        <li key={head}>
-          <div className="text-[12px] font-bold text-slate-900 uppercase tracking-wide">
-            {i + 1}. {head}
-          </div>
-          <p className="text-[12.5px] text-slate-600 leading-relaxed mt-1">
-            {body}
-          </p>
+      {terms.map((line, i) => (
+        <li key={i} className="text-[12.5px] text-slate-700 leading-relaxed whitespace-pre-wrap">
+          {line}
         </li>
       ))}
     </ol>
+  );
+}
+
+function UploadedContractViewer({ info }) {
+  const isPdf = /\.pdf($|\?)/i.test(info.name) || /\.pdf($|\?)/i.test(info.url ?? "");
+  return (
+    <div className="mt-3 space-y-4">
+      <div
+        className="rounded-xl border flex items-start gap-3 p-3.5"
+        style={{ background: "#FFF8F0", borderColor: "#FFE0C0" }}
+      >
+        <div
+          className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{ background: "#FFE9D2" }}
+        >
+          <FileText size={18} style={{ color: "#E07820" }} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-bold uppercase tracking-wider" style={{ color: "#E07820" }}>
+            Landlord-provided contract
+          </p>
+          <p className="text-sm font-semibold text-slate-900 truncate mt-0.5">{info.name}</p>
+          <p className="text-[11.5px] text-slate-500 mt-1 leading-relaxed">
+            This attached document is the binding contract. The default in-app
+            template has been replaced by the file below.
+          </p>
+        </div>
+        {info.url && (
+          <a
+            href={info.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg flex-shrink-0"
+            style={{ color: "#E07820", background: "#FFE9D2" }}
+          >
+            <Download size={13} /> Open
+          </a>
+        )}
+      </div>
+
+      {info.url && isPdf && (
+        <div className="rounded-xl border border-slate-200 overflow-hidden bg-slate-50 print:hidden">
+          <iframe
+            src={info.url}
+            title={info.name}
+            className="w-full"
+            style={{ height: "70vh", border: 0 }}
+          />
+        </div>
+      )}
+
+      {info.url && !isPdf && (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-center print:hidden">
+          <FileText size={22} className="text-slate-400 mx-auto" />
+          <p className="text-sm font-semibold text-slate-700 mt-2">{info.name}</p>
+          <p className="text-[12px] text-slate-500 mt-1">
+            This file format can't be previewed in the browser.
+          </p>
+          <a
+            href={info.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg text-white"
+            style={{ background: "#E07820" }}
+          >
+            <Download size={13} /> Download to view
+          </a>
+        </div>
+      )}
+    </div>
   );
 }
 

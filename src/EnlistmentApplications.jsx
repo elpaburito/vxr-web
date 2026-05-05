@@ -1,41 +1,98 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Home, Bell, ArrowLeft, MapPin, Bed, Bath, Square,
   FileText, Eye, Check, X, AlertCircle, Users, ChevronRight,
+  Loader2, Inbox, Send, Edit3,
 } from "lucide-react";
 import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import { supabase } from "./lib/supabase";
+import ApplicationEditModal from "./components/ApplicationEditModal.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
+import { STATUS_STYLE } from "./data/enlistmentMock";
 import {
-  SAMPLE_UNITS, SAMPLE_APPLICANTS, SAMPLE_APPLICATION_DETAILS, STATUS_STYLE,
-} from "./data/enlistmentMock";
-import { loadContract, getContractStatus } from "./lib/contractStorage";
+  fetchLandlordApplications, fetchTenantApplications, updateApplicationStatus,
+} from "./lib/applicationsService";
+import { fetchMyListings } from "./lib/listingsService";
+import { hasUserListings } from "./lib/profileService";
+import {
+  fetchContractByApplication, createContract, getContractStatus, buildContractFromApplication,
+  normalizeContract,
+} from "./lib/contractsService";
 
 export default function EnlistmentApplications() {
   const navigate = useNavigate();
   const { user, profile, isAuthenticated } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
+  // Capability flags
+  const [isLandlord, setIsLandlord] = useState(false);
+  const [tabKey, setTabKey] = useState("submitted"); // "incoming" | "submitted"
+
   // View state: "units" → "applications" → "details"
   const [view, setView] = useState("units");
   const [selectedUnitId, setSelectedUnitId] = useState(null);
   const [selectedApplicantId, setSelectedApplicantId] = useState(null);
 
-  const [applicants, setApplicants] = useState(SAMPLE_APPLICANTS);
+  // Supabase data
+  const [units, setUnits] = useState([]);        // landlord's listings
+  const [applicants, setApplicants] = useState([]); // all applications for this landlord
+  const [tenantApps, setTenantApps] = useState([]); // applications submitted BY this user
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError, setDataError] = useState(null);
+
+  // Edit-pending-application modal
+  const [editAppId, setEditAppId] = useState(null);
 
   const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
 
-  const selectedUnit = SAMPLE_UNITS.find((u) => u.id === selectedUnitId);
+  const loadData = useCallback(async () => {
+    if (!user?.id) return;
+    setDataLoading(true);
+    setDataError(null);
+    try {
+      const landlord = await hasUserListings(user.id);
+      setIsLandlord(landlord);
+      // Default landlord-by-default to incoming, others stay on submitted
+      setTabKey(landlord ? "incoming" : "submitted");
+
+      const [listingsResult, landlordAppsResult, tenantAppsResult] = await Promise.all([
+        landlord ? fetchMyListings(user.id) : Promise.resolve({ data: [] }),
+        landlord ? fetchLandlordApplications(user.id) : Promise.resolve({ data: [] }),
+        fetchTenantApplications(user.id),
+      ]);
+      if (listingsResult.error) throw listingsResult.error;
+      if (landlordAppsResult.error) throw landlordAppsResult.error;
+      if (tenantAppsResult.error) throw tenantAppsResult.error;
+      setUnits(listingsResult.data ?? []);
+      setApplicants(landlordAppsResult.data ?? []);
+      setTenantApps(tenantAppsResult.data ?? []);
+    } catch (err) {
+      setDataError(err?.message || "Failed to load data.");
+    } finally {
+      setDataLoading(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const selectedUnit = units.find((u) => u.id === selectedUnitId);
   const selectedApplicant = applicants.find((a) => a.id === selectedApplicantId);
 
   // Applicant counts per unit
   const unitsWithCounts = useMemo(
     () =>
-      SAMPLE_UNITS.map((u) => ({
+      units.map((u) => ({
         ...u,
-        applicantCount: applicants.filter((a) => a.unitId === u.id).length,
+        // Normalize to the shape the UI components expect
+        beds:  u.bedrooms ?? 0,
+        baths: u.bathrooms ?? 0,
+        size:  u.squareMeters ? `${u.squareMeters}m²` : "—",
+        image: u.cover ?? u.img ?? null,
+        price: u.monthlyRent ?? 0,
+        applicantCount: applicants.filter((a) => a.listing_id === u.id).length,
       })),
-    [applicants]
+    [units, applicants]
   );
 
   const goToApplications = (unitId) => {
@@ -60,14 +117,18 @@ export default function EnlistmentApplications() {
     }
   };
 
-  const updateStatus = (id, status) => {
+  const handleUpdateStatus = async (id, status) => {
     setApplicants((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+    await updateApplicationStatus(id, status);
   };
 
-  const headerTitle =
-    view === "units" ? "Applicants"
-    : view === "applications" ? "Applications"
-    : "Application Details";
+  const showLandlordFlow = isLandlord && tabKey === "incoming";
+
+  const headerTitle = showLandlordFlow
+    ? (view === "units" ? "Applicants"
+      : view === "applications" ? "Applications"
+      : "Application Details")
+    : "My Applications";
 
   return (
     <div className="w-full min-h-screen bg-[#F4F4F6] flex flex-col">
@@ -82,24 +143,281 @@ export default function EnlistmentApplications() {
       />
 
       <main className="flex-1 max-w-[80rem] w-full mx-auto px-4 lg:px-6 py-6">
-        {view === "units" && (
-          <UnitsView units={unitsWithCounts} onOpen={goToApplications} />
-        )}
-        {view === "applications" && selectedUnit && (
-          <ApplicationsView
-            unit={selectedUnit}
-            applicants={applicants.filter((a) => a.unitId === selectedUnit.id)}
-            onView={goToDetails}
-          />
-        )}
-        {view === "details" && selectedApplicant && (
-          <DetailsView
-            applicant={selectedApplicant}
-            onApprove={() => updateStatus(selectedApplicant.id, "approved")}
-            onReject={() => updateStatus(selectedApplicant.id, "rejected")}
-          />
+        {dataLoading ? (
+          <div className="flex items-center justify-center py-24 text-slate-400">
+            <Loader2 className="animate-spin mr-2" size={20} /> Loading…
+          </div>
+        ) : dataError ? (
+          <div className="flex flex-col items-center justify-center py-24 gap-2 text-slate-500">
+            <AlertCircle size={28} className="text-red-400" />
+            <p className="text-sm">{dataError}</p>
+            <button onClick={loadData} className="text-xs text-[#EC6138] underline">Retry</button>
+          </div>
+        ) : (
+          <>
+            {/* Role tabs — only when both modes are useful */}
+            {isLandlord && view === "units" && (
+              <RoleTabs
+                tabKey={tabKey}
+                onChange={(k) => { setTabKey(k); setView("units"); }}
+                incomingCount={applicants.length}
+                submittedCount={tenantApps.length}
+              />
+            )}
+
+            {showLandlordFlow ? (
+              <>
+                {view === "units" && (
+                  <UnitsView units={unitsWithCounts} onOpen={goToApplications} />
+                )}
+                {view === "applications" && selectedUnit && (
+                  <ApplicationsView
+                    unit={unitsWithCounts.find(u => u.id === selectedUnitId)}
+                    applicants={applicants
+                      .filter((a) => a.listing_id === selectedUnit.id)
+                      .map((a) => ({
+                        ...a,
+                        name: [a.first_name, a.last_name].filter(Boolean).join(" ") || "Applicant",
+                        applied: a.created_at ? new Date(a.created_at).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" }) : "—",
+                      }))}
+                    onView={goToDetails}
+                  />
+                )}
+                {view === "details" && selectedApplicant && (
+                  <DetailsView
+                    applicant={{
+                      ...selectedApplicant,
+                      name: [selectedApplicant.first_name, selectedApplicant.last_name].filter(Boolean).join(" ") || "Applicant",
+                      applied: selectedApplicant.created_at
+                        ? new Date(selectedApplicant.created_at).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })
+                        : "—",
+                    }}
+                    currentUser={{ id: user?.id, profile }}
+                    onApprove={() => handleUpdateStatus(selectedApplicant.id, "approved")}
+                    onReject={() => handleUpdateStatus(selectedApplicant.id, "rejected")}
+                  />
+                )}
+              </>
+            ) : (
+              <TenantApplicationsView
+                applications={tenantApps}
+                onBrowse={() => navigate("/home2")}
+                onEdit={(id) => setEditAppId(id)}
+              />
+            )}
+          </>
         )}
       </main>
+
+      <ApplicationEditModal
+        isOpen={!!editAppId}
+        applicationId={editAppId}
+        tenantId={user?.id}
+        onClose={() => setEditAppId(null)}
+        onSaved={loadData}
+      />
+    </div>
+  );
+}
+
+// ============================================================================
+// Role tabs (visible only when the user is both landlord and tenant)
+// ============================================================================
+
+function RoleTabs({ tabKey, onChange, incomingCount, submittedCount }) {
+  const tabs = [
+    { key: "incoming",  label: "Incoming",  Icon: Inbox, count: incomingCount  },
+    { key: "submitted", label: "Submitted", Icon: Send,  count: submittedCount },
+  ];
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-1 grid grid-cols-2 mb-5 shadow-sm max-w-md">
+      {tabs.map(({ key, label, Icon, count }) => {
+        const active = tabKey === key;
+        return (
+          <button
+            key={key}
+            onClick={() => onChange(key)}
+            className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+              active ? "bg-white text-slate-900 shadow-md" : "text-slate-500 hover:text-slate-900"
+            }`}
+            style={active ? { boxShadow: "0 2px 8px rgba(0,0,0,0.07)" } : undefined}
+          >
+            <Icon size={14} />
+            {label}
+            <span
+              className={`text-[10px] font-bold rounded-full px-1.5 min-w-[18px] h-[18px] flex items-center justify-center ${
+                active ? "bg-[#EC6138] text-white" : "bg-slate-100 text-slate-500"
+              }`}
+            >
+              {count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================================
+// Tenant view — applications submitted by the current user
+// ============================================================================
+
+const CONTRACT_CTA = {
+  awaiting_tenant:   { label: "Sign contract",       go: (id) => `/contract/${id}` },
+  awaiting_landlord: { label: "Awaiting landlord",   go: (id) => `/contract/${id}` },
+  fully_signed:      { label: "Proceed to payment",  go: ()   => `/my-payments` },
+  paid:              { label: "View active rental",  go: ()   => `/my-rental` },
+  cancelled:         { label: "View contract",       go: (id) => `/contract/${id}` },
+};
+
+function TenantApplicationsView({ applications, onBrowse, onEdit }) {
+  const navigate = useNavigate();
+  const [statusTab, setStatusTab] = useState("pending");
+
+  // Group applications by status so the Submitted tab mirrors the
+  // landlord's Incoming view (Pending / Approved / Rejected).
+  const counts = {
+    pending:  applications.filter((a) => (a.status ?? "pending") === "pending").length,
+    approved: applications.filter((a) => a.status === "approved").length,
+    rejected: applications.filter((a) => a.status === "rejected").length,
+  };
+  const filtered = applications.filter((a) => (a.status ?? "pending") === statusTab);
+
+  if (applications.length === 0) {
+    return (
+      <div className="max-w-2xl mx-auto">
+        <EmptyState
+          icon={Send}
+          title="You haven't applied yet"
+          subtitle="Browse listings to submit your first rental application."
+        />
+        <div className="text-center mt-4">
+          <button
+            onClick={onBrowse}
+            className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-white text-sm font-semibold transition hover:opacity-90"
+            style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+          >
+            Browse listings
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-3">
+      <h1 className="text-xl font-bold text-slate-900 tracking-tight">My Applications</h1>
+      <p className="text-sm text-slate-500 -mt-1 mb-3">
+        Track every rental you've applied to — pending, approved, and rejected.
+      </p>
+
+      {/* Status sub-tabs */}
+      <div className="inline-flex bg-slate-100 rounded-full p-1 mb-1">
+        {["pending", "approved", "rejected"].map((key) => {
+          const active = statusTab === key;
+          const labelMap = { pending: "Pending", approved: "Approved", rejected: "Rejected" };
+          return (
+            <button
+              key={key}
+              onClick={() => setStatusTab(key)}
+              className={`px-4 py-1.5 rounded-full text-xs font-semibold transition ${
+                active
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {labelMap[key]}
+              <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full ${active ? "bg-slate-100 text-slate-600" : "bg-white text-slate-400"}`}>
+                {counts[key]}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {filtered.length === 0 && (
+        <EmptyState
+          icon={Inbox}
+          title={`No ${statusTab} applications`}
+          subtitle={
+            statusTab === "pending"
+              ? "Applications you submit will appear here while landlords review them."
+              : statusTab === "approved"
+                ? "Approved applications will appear here once a landlord accepts you."
+                : "Rejected applications will appear here."
+          }
+        />
+      )}
+
+      {filtered.map((app) => {
+        const status = (app.status ?? "pending").toLowerCase();
+        const style  = STATUS_STYLE[status] ?? STATUS_STYLE.pending;
+        const listing = app.listings ?? {};
+        const contract = Array.isArray(app.contract) ? app.contract[0] : app.contract;
+        const cta = contract?.id ? CONTRACT_CTA[contract.status] : null;
+        const applied = app.submitted_at || app.created_at;
+
+        return (
+          <div
+            key={app.id}
+            className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 flex items-center gap-4"
+          >
+            <div className="w-14 h-14 rounded-xl bg-slate-100 flex-shrink-0 overflow-hidden">
+              {listing.cover_photo_url
+                ? <img src={listing.cover_photo_url} alt="" className="w-full h-full object-cover" />
+                : <Home size={20} className="m-auto mt-4 text-slate-400" />}
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-slate-900 text-[15px] truncate">
+                  {listing.title || "Listing"}
+                </h3>
+                <span
+                  className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full"
+                  style={{ background: style.bg, color: style.color }}
+                >
+                  {style.label}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Applied {applied ? new Date(applied).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" }) : "—"}
+              </p>
+              {listing.property_type && (
+                <p className="text-[11px] text-slate-400 mt-0.5 capitalize">{listing.property_type}</p>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-2 flex-shrink-0">
+              {listing.id && (
+                <button
+                  onClick={() => navigate(`/unit/${listing.id}`)}
+                  className="text-xs font-semibold text-slate-700 px-3.5 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 transition"
+                >
+                  View listing
+                </button>
+              )}
+              {status === "pending" && onEdit && (
+                <button
+                  onClick={() => onEdit(app.id)}
+                  className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-[#EC6138] px-3.5 py-1.5 rounded-full border border-[#EC6138]/40 bg-white hover:bg-orange-50 transition"
+                >
+                  <Edit3 size={12} /> Edit details
+                </button>
+              )}
+              {cta && (
+                <button
+                  onClick={() => navigate(cta.go(contract.id))}
+                  className="text-xs font-semibold text-white px-3.5 py-1.5 rounded-full transition hover:opacity-90"
+                  style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+                >
+                  {cta.label}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -334,16 +652,76 @@ function ApplicantCard({ applicant, onView }) {
 // VIEW 3 — Application details
 // ============================================================================
 
-function DetailsView({ applicant, onApprove, onReject }) {
+function DetailsView({ applicant, currentUser, onApprove, onReject }) {
   const navigate = useNavigate();
   const [confirm, setConfirm] = useState(null); // 'approve' | 'reject' | null
-  const data = SAMPLE_APPLICATION_DETAILS;
-  const style = STATUS_STYLE[applicant.status];
+  const [contractLoading, setContractLoading] = useState(false);
+  const [contractStatus, setContractStatus] = useState(null);
+  const [contractId, setContractId] = useState(null);
+  const [signedUrls, setSignedUrls] = useState({}); // doc.url (path) → signed URL
+  const [lightboxUrl, setLightboxUrl] = useState(null); // fullscreen image overlay
+  const style = STATUS_STYLE[applicant.status] ?? STATUS_STYLE.pending;
 
-  // For approved applicants, surface the live contract / payment status from
-  // localStorage so the action button reflects what the next step actually is.
-  const contract = applicant.status === "approved" ? loadContract(applicant.id) : null;
-  const contractStatus = contract ? getContractStatus(contract) : null;
+  // Generate signed URLs for each document in storage
+  useEffect(() => {
+    const docs = applicant.application_document ?? [];
+    if (docs.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        docs.map(async (d) => {
+          const { data, error } = await supabase.storage
+            .from("application-documents")
+            .createSignedUrl(d.url, 3600);
+          return [d.url, error ? null : data?.signedUrl];
+        })
+      );
+      if (!cancelled) setSignedUrls(Object.fromEntries(entries));
+    })();
+    return () => { cancelled = true; };
+  }, [applicant.id, applicant.application_document]);
+
+  // Load contract status for approved applicants
+  useEffect(() => {
+    if (applicant.status !== "approved") return;
+    fetchContractByApplication(applicant.id).then(({ data }) => {
+      if (data) {
+        setContractId(data.id);
+        // Normalize first — the raw row's `payment` join is `[]` (truthy)
+        // when no payments exist, which would make getContractStatus
+        // incorrectly report "paid".
+        setContractStatus(getContractStatus(normalizeContract(data)));
+      }
+    });
+  }, [applicant.id, applicant.status]);
+
+  const handleViewContract = async () => {
+    if (contractId) {
+      navigate(`/contract/${contractId}`);
+      return;
+    }
+    setContractLoading(true);
+    try {
+      const payload = buildContractFromApplication(applicant, currentUser);
+      const { data, error } = await createContract(payload);
+      if (error) { alert("Failed to create contract: " + error.message); return; }
+      navigate(`/contract/${data.id}`);
+    } finally {
+      setContractLoading(false);
+    }
+  };
+
+  // Build document list from application_document join
+  const DOC_LABELS = {
+    valid_id_front:  { name: "Valid ID (Front)",  type: "image" },
+    valid_id_back:   { name: "Valid ID (Back)",   type: "image" },
+    proof_of_income: { name: "Proof of Income",   type: "document" },
+  };
+  const documents = (applicant.application_document ?? []).map((d) => ({
+    name: DOC_LABELS[d.document_type]?.name ?? d.document_type,
+    url:  d.url,
+    type: DOC_LABELS[d.document_type]?.type ?? "document",
+  }));
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
@@ -365,12 +743,12 @@ function DetailsView({ applicant, onApprove, onReject }) {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
-          <Field label="Date of Birth" value={data.dob} />
-          <Field label="Email" value={data.email} />
-          <Field label="Phone" value={data.phone} />
-          <Field label="Applied" value={applicant.applied} />
+          <Field label="Date of Birth"     value={applicant.date_of_birth   ?? "—"} />
+          <Field label="Email"             value={applicant.email            ?? "—"} />
+          <Field label="Phone"             value={applicant.phone_number      ?? "—"} />
+          <Field label="Applied"           value={applicant.applied          ?? "—"} />
           <div className="sm:col-span-2">
-            <Field label="Current Address" value={data.currentAddress} />
+            <Field label="Current Address" value={applicant.current_address  ?? "—"} />
           </div>
         </div>
       </Card>
@@ -379,12 +757,12 @@ function DetailsView({ applicant, onApprove, onReject }) {
       <Card>
         <SectionHead>Employment</SectionHead>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
-          <Field label="Employment Status" value={data.employmentStatus} />
-          <Field label="Job Title" value={data.jobTitle} />
-          <Field label="Company" value={data.company} />
-          <Field label="Monthly Income" value={data.monthlyIncome} />
-          <Field label="Length of Employment" value={data.lengthOfEmployment} />
-          <Field label="Work Address" value={data.workAddress} />
+          <Field label="Employment Status"    value={applicant.employment_status     ?? "—"} />
+          <Field label="Job Title"            value={applicant.job_title             ?? "—"} />
+          <Field label="Company"             value={applicant.company_name           ?? "—"} />
+          <Field label="Monthly Income"      value={applicant.monthly_income != null ? `₱${Number(applicant.monthly_income).toLocaleString()}` : "—"} />
+          <Field label="Length of Employment" value={applicant.employment_length     ?? "—"} />
+          <Field label="Work Address"        value={applicant.work_address           ?? "—"} />
         </div>
       </Card>
 
@@ -392,24 +770,53 @@ function DetailsView({ applicant, onApprove, onReject }) {
       <Card>
         <SectionHead>Rental History</SectionHead>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
-          <Field label="Previous Address" value={data.previousAddress} />
-          <Field label="Reason for Leaving" value={data.reasonForLeaving} />
-          <Field label="Rental Duration" value={data.rentalDuration} />
-          <Field label="Previous Landlord" value={data.previousLandlord} />
-          <Field label="Landlord Contact" value={data.landlordContact} />
-          <Field label="Reason for Leaving" value={data.rentalReasonLeaving} />
+          <Field label="First-Time Renter"   value={applicant.first_time_renter === false ? "No" : "Yes"} />
+          <Field label="Previous Address"    value={applicant.previous_address        ?? "—"} />
+          <Field label="Reason for Leaving"  value={applicant.reason_for_leaving      ?? "—"} />
+          <Field label="Rental Duration"     value={applicant.stayed_duration         ?? "—"} />
+          <Field label="Previous Landlord"   value={applicant.previous_landlord       ?? "—"} />
+          <Field label="Landlord Contact"    value={applicant.landlord_contact        ?? "—"} />
         </div>
       </Card>
 
       {/* Documents */}
-      <Card>
-        <SectionHead>Documents</SectionHead>
-        <div className="space-y-2">
-          {data.documents.map((doc) => (
-            <DocumentRow key={doc.name} doc={doc} />
-          ))}
+      {documents.length > 0 && (
+        <Card>
+          <SectionHead>Documents</SectionHead>
+          <div className="space-y-4">
+            {documents.map((doc) => (
+              <DocumentRow
+                key={doc.name}
+                doc={doc}
+                signedUrl={signedUrls[doc.url] ?? null}
+                onViewImage={(url) => setLightboxUrl(url)}
+              />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Lightbox overlay for full-size image */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <div className="relative max-w-3xl w-full" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setLightboxUrl(null)}
+              className="absolute -top-10 right-0 text-white/80 hover:text-white text-sm font-semibold"
+            >
+              ✕ Close
+            </button>
+            <img
+              src={lightboxUrl}
+              alt="Document"
+              className="w-full max-h-[80vh] object-contain rounded-xl shadow-2xl"
+            />
+          </div>
         </div>
-      </Card>
+      )}
 
       {/* Action buttons */}
       {applicant.status === "pending" ? (
@@ -432,11 +839,12 @@ function DetailsView({ applicant, onApprove, onReject }) {
       ) : applicant.status === "approved" ? (
         <div className="pt-2 space-y-2">
           <button
-            onClick={() => navigate(`/contract/${applicant.id}`)}
-            className="w-full h-12 rounded-xl text-white font-semibold transition shadow-sm hover:shadow-md inline-flex items-center justify-center gap-2"
+            onClick={handleViewContract}
+            disabled={contractLoading}
+            className="w-full h-12 rounded-xl text-white font-semibold transition shadow-sm hover:shadow-md inline-flex items-center justify-center gap-2 disabled:opacity-60"
             style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
           >
-            <FileText size={16} />
+            {contractLoading ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
             {contractStatus === "paid"
               ? "View Active Contract"
               : contractStatus === "both_signed"
@@ -445,7 +853,9 @@ function DetailsView({ applicant, onApprove, onReject }) {
               ? "Awaiting Tenant Signature"
               : contractStatus === "pending_landlord"
               ? "Sign Contract"
-              : "View Contract"}
+              : contractId
+              ? "View Contract"
+              : "Create Contract"}
           </button>
           {contractStatus && (
             <ContractStatusHint status={contractStatus} />
@@ -581,23 +991,58 @@ function Field({ label, value }) {
   );
 }
 
-function DocumentRow({ doc }) {
+function DocumentRow({ doc, signedUrl, onViewImage }) {
+  const isImage = doc.type === "image";
+
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-slate-200 bg-slate-50/50">
-      <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center flex-shrink-0">
-        <FileText size={15} className="text-slate-500" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold text-slate-800 truncate">
-          {doc.name}
+    <div className="rounded-xl border border-slate-200 bg-slate-50/50 overflow-hidden">
+      {/* Header row */}
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center flex-shrink-0">
+          <FileText size={15} className="text-slate-500" />
         </div>
-        <div className="text-[11px] text-slate-400 uppercase tracking-wide">
-          {doc.type}
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-slate-800 truncate">{doc.name}</div>
+          <div className="text-[11px] text-slate-400 uppercase tracking-wide">{doc.type}</div>
         </div>
+        {signedUrl ? (
+          isImage ? (
+            <button
+              onClick={() => onViewImage(signedUrl)}
+              className="text-xs font-semibold text-slate-700 px-3.5 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 transition"
+            >
+              Expand
+            </button>
+          ) : (
+            <a
+              href={signedUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-semibold text-slate-700 px-3.5 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 transition"
+            >
+              View
+            </a>
+          )
+        ) : (
+          <span className="text-xs font-semibold text-slate-400 px-3.5 py-1.5 rounded-full border border-slate-200 bg-white cursor-not-allowed">
+            {doc.url ? "Loading…" : "No file"}
+          </span>
+        )}
       </div>
-      <button className="text-xs font-semibold text-slate-700 px-3.5 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 transition">
-        View
-      </button>
+
+      {/* Image preview — only for ID photos */}
+      {isImage && signedUrl && (
+        <div
+          className="mx-3 mb-3 rounded-lg overflow-hidden border border-slate-200 bg-white cursor-pointer"
+          onClick={() => onViewImage(signedUrl)}
+        >
+          <img
+            src={signedUrl}
+            alt={doc.name}
+            className="w-full max-h-56 object-contain"
+          />
+        </div>
+      )}
     </div>
   );
 }

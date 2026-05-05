@@ -129,7 +129,7 @@ export default function MyListings() {
 
         <div className="mb-[2rem]">
           <button
-            onClick={() => navigate("/dashboard")}
+            onClick={() => navigate("/enlist")}
             className="flex items-center gap-[0.5rem] px-[1rem] py-[0.5rem] bg-white border border-gray-200 rounded-lg hover:shadow-md transition-shadow"
           >
             <Plus size={18} className="text-[#e8756a]" />
@@ -165,7 +165,7 @@ export default function MyListings() {
                 Create your first listing to start renting out your property.
               </p>
               <button
-                onClick={() => navigate("/dashboard")}
+                onClick={() => navigate("/enlist")}
                 className="px-[1.5rem] py-[0.75rem] text-white rounded-lg font-medium transition-all hover:opacity-90 text-[1rem]"
                 style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
               >
@@ -181,7 +181,12 @@ export default function MyListings() {
                   property={listing}
                   onView={() => navigate(`/unit/${listing.id}`)}
                 />
-                {listing.status !== "active" && (
+                {listing.status === "rented" && (
+                  <span className="absolute top-2 right-14 bg-emerald-600 text-white text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider shadow-md">
+                    Rented
+                  </span>
+                )}
+                {listing.status !== "active" && listing.status !== "rented" && (
                   <span className="absolute top-2 right-14 bg-slate-900/80 text-white text-[10px] font-semibold px-2 py-1 rounded-full uppercase tracking-wider">
                     {listing.status}
                   </span>
@@ -190,7 +195,7 @@ export default function MyListings() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      navigate(`/dashboard?edit=${listing.id}`);
+                      navigate(`/enlist?edit=${listing.id}`);
                     }}
                     className="p-2 bg-white rounded-full shadow-md hover:bg-gray-100 transition border border-gray-200"
                     title="Edit"

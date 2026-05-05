@@ -1,9 +1,24 @@
 import { supabase } from "./supabase";
 
 const LISTINGS_BUCKET = "listing-images";
+const CONTRACTS_BUCKET = "listing-contracts";
 const IMAGES_TABLE = "listing_image";
 const IMAGE_URL_COL = "url";
 const FULL_VIEW = "listings_full";
+
+// ---------- URL resolution ----------
+
+/**
+ * Ensure an image URL is a full https:// URL.
+ * Mobile app stores relative storage paths (e.g. "userId/photo.jpg").
+ * Web upload stores full public URLs already.
+ */
+function resolveStorageUrl(rawUrl) {
+  if (!rawUrl) return null;
+  if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return rawUrl;
+  const { data } = supabase.storage.from(LISTINGS_BUCKET).getPublicUrl(rawUrl);
+  return data?.publicUrl ?? null;
+}
 
 // ---------- shape conversion ----------
 
@@ -93,22 +108,30 @@ export function normalizeListing(row) {
   const joinedImages = Array.isArray(row.listing_image)
     ? [...row.listing_image].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
     : [];
-  const galleryUrls = joinedImages.map((i) => i.url).filter(Boolean);
+  const galleryUrls = joinedImages.map((i) => resolveStorageUrl(i.url)).filter(Boolean);
 
-  const explicitCover = joinedImages.find((i) => i.is_cover)?.url;
-  const cover = explicitCover || row.cover_photo_url || galleryUrls[0] || null;
+  const explicitCover = joinedImages.find((i) => i.is_cover)
+    ? resolveStorageUrl(joinedImages.find((i) => i.is_cover).url)
+    : null;
+  // listings.cover_photo_url is the single source of truth — it's what
+  // create/update writes. listing_image.is_cover is a stale fallback.
+  const cover = resolveStorageUrl(row.cover_photo_url)
+    || explicitCover
+    || galleryUrls[0]
+    || null;
 
   // Normal-only list for the carousel lightbox (excludes panorama/360)
   const normalRecords = joinedImages.filter((i) => (i.type ?? "normal") !== "panorama");
-  const normalImages = normalRecords.map((i) => i.url).filter(Boolean);
+  const normalImages = normalRecords.map((i) => resolveStorageUrl(i.url)).filter(Boolean);
 
   const images = [];
   if (cover) images.push(cover);
   for (const url of galleryUrls) {
     if (url && !images.includes(url)) images.push(url);
   }
-  if (row.cover_photo_url && !images.includes(row.cover_photo_url)) {
-    images.push(row.cover_photo_url);
+  const resolvedCoverPhotoUrl = resolveStorageUrl(row.cover_photo_url);
+  if (resolvedCoverPhotoUrl && !images.includes(resolvedCoverPhotoUrl)) {
+    images.push(resolvedCoverPhotoUrl);
   }
 
   const location =
@@ -126,6 +149,7 @@ export function normalizeListing(row) {
       ? `${capitalize(row.property_type)}${row.city ? ` · ${row.city}` : ""}`
       : "Property",
     propertyType: row.property_type,
+    listingType: row.listing_type ?? "lease",
 
     // Pricing (from listing_financials)
     monthlyRent: safeNum(row.monthly_rent),
@@ -218,7 +242,7 @@ export function normalizeListing(row) {
     noCurfew: row.no_curfew !== false,
     curfew: row.no_curfew === false ? "With Curfew" : "No Curfew",
     guestPolicy: row.guest_policy ?? null,
-    sublettingAllowed: !!row.subletting_allowed,
+    sublettingAllowed:   !!row.subletting_allowed,
     modificationAllowed: !!row.modification_allowed,
 
     // Requirements (from listing_requirements)
@@ -250,20 +274,27 @@ export function normalizeListing(row) {
 async function attachImages(listings) {
   if (!listings || listings.length === 0) return listings ?? [];
   const ids = listings.map((l) => l.id);
+
   const { data, error } = await supabase
-    .from(IMAGES_TABLE)
-    .select(`id, listing_id, ${IMAGE_URL_COL}, is_cover, sort_order, type, upload_source`)
+    .from("listing_image")
+    .select("id, listing_id, url, is_cover, sort_order, type, upload_source")
     .in("listing_id", ids);
+
   if (error) {
-    console.warn("Failed to load listing images:", error.message);
+    console.warn("listing_image fetch:", error.message);
     return listings.map((l) => ({ ...l, listing_image: [] }));
   }
+
   const byId = new Map();
   for (const img of data ?? []) {
     if (!byId.has(img.listing_id)) byId.set(img.listing_id, []);
     byId.get(img.listing_id).push(img);
   }
-  return listings.map((l) => ({ ...l, listing_image: byId.get(l.id) ?? [] }));
+
+  return listings.map((l) => ({
+    ...l,
+    listing_image: (byId.get(l.id) ?? []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
+  }));
 }
 
 export async function fetchListings(options = {}) {
@@ -283,6 +314,25 @@ export async function fetchListings(options = {}) {
   return { data: withImages.map(normalizeListing), error: null };
 }
 
+/**
+ * Fetch a batch of listings by id, returning normalized rows in the same
+ * order as the input ids. Listings that no longer exist are filtered out.
+ * Used by the wishlist module to hydrate bookmarked listing IDs.
+ */
+export async function fetchListingsByIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return { data: [], error: null };
+  const { data, error } = await supabase
+    .from(FULL_VIEW)
+    .select("*")
+    .in("id", ids);
+  if (error) return { data: [], error };
+
+  const withImages = await attachImages(data ?? []);
+  const byId = new Map(withImages.map((r) => [r.id, normalizeListing(r)]));
+  const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+  return { data: ordered, error: null };
+}
+
 export async function fetchListingById(id) {
   const { data, error } = await supabase
     .from(FULL_VIEW)
@@ -292,8 +342,25 @@ export async function fetchListingById(id) {
   if (error) return { data: null, error };
   if (!data) return { data: null, error: null };
 
+  // Contract-template columns aren't in the listings_full view — pull them
+  // from the base listings table so the form can edit them.
+  const { data: contractRow } = await supabase
+    .from("listings")
+    .select("contract_template_url, contract_template_name, terms_override")
+    .eq("id", id)
+    .maybeSingle();
+
   const [withImages] = await attachImages([data]);
-  return { data: normalizeListing(withImages), error: null };
+  const normalized = normalizeListing(withImages);
+  return {
+    data: {
+      ...normalized,
+      contractTemplateUrl:  contractRow?.contract_template_url  ?? null,
+      contractTemplateName: contractRow?.contract_template_name ?? null,
+      termsOverride:        contractRow?.terms_override         ?? null,
+    },
+    error: null,
+  };
 }
 
 export async function fetchMyListings(ownerId) {
@@ -434,13 +501,21 @@ async function writeSatelliteTables(listingId, p) {
     });
   }
 
-  // 8. Policies — "No X" / "With Curfew" are falsey; anything else is truthy
-  if ([p.petPolicy, p.smokingPolicy, p.curfew, p.guestPolicy].some((v) => v !== undefined && v !== "")) {
+  // 8. Policies — "No X" / "With Curfew" are falsey; anything else is truthy.
+  // subletting/modifications are explicit booleans on the form so we always
+  // forward them when present.
+  const hasPolicySignal = [
+    p.petPolicy, p.smokingPolicy, p.curfew, p.guestPolicy,
+    p.sublettingAllowed, p.modificationAllowed,
+  ].some((v) => v !== undefined && v !== "");
+  if (hasPolicySignal) {
     await upsertSatellite("listing_policies", listingId, {
       pets_allowed: typeof p.petPolicy === "string" ? !/^no/i.test(p.petPolicy) : !!p.petsAllowed,
       smoking_allowed: typeof p.smokingPolicy === "string" ? !/^no/i.test(p.smokingPolicy) : !!p.smokingAllowed,
       no_curfew: typeof p.curfew === "string" ? !/with/i.test(p.curfew) : true,
       guest_policy: nonEmpty(p.guestPolicy),
+      subletting_allowed:   !!p.sublettingAllowed,
+      modification_allowed: !!p.modificationAllowed,
     });
   }
 
@@ -459,9 +534,17 @@ export async function createListing(payload) {
     title: payload.title,
     description: payload.description ?? payload.aboutPlace ?? null,
     property_type: payload.propertyType ?? null,
+    listing_type: payload.listingType ?? "lease",
     status: payload.status ?? "active",
     cover_photo_url: payload.cover ?? null,
     landlord_id: payload.ownerId,
+    // Custom contract template the landlord uploaded on this form.
+    // updateListing() persists these on edit; without writing them on
+    // insert, the file lives in storage but listings.contract_template_url
+    // stays NULL — so ContractView falls back to the default template.
+    contract_template_url:  payload.contractTemplateUrl  ?? null,
+    contract_template_name: payload.contractTemplateName ?? null,
+    terms_override:         payload.termsOverride        ?? null,
   };
 
   const { data: inserted, error } = await supabase
@@ -491,8 +574,12 @@ export async function updateListing(id, patch) {
     baseUpdate.description = patch.description ?? patch.aboutPlace ?? null;
   }
   if (patch.propertyType !== undefined) baseUpdate.property_type = patch.propertyType;
+  if (patch.listingType !== undefined) baseUpdate.listing_type = patch.listingType;
   if (patch.status !== undefined) baseUpdate.status = patch.status;
   if (patch.cover !== undefined) baseUpdate.cover_photo_url = patch.cover;
+  if (patch.contractTemplateUrl !== undefined)  baseUpdate.contract_template_url  = patch.contractTemplateUrl;
+  if (patch.contractTemplateName !== undefined) baseUpdate.contract_template_name = patch.contractTemplateName;
+  if (patch.termsOverride !== undefined)        baseUpdate.terms_override         = patch.termsOverride;
 
   if (Object.keys(baseUpdate).length > 1) {
     const { error } = await supabase.from("listings").update(baseUpdate).eq("id", id);
@@ -511,6 +598,16 @@ export async function updateListing(id, patch) {
 export async function deleteListingById(id) {
   const { error } = await supabase.from("listings").delete().eq("id", id);
   return { error };
+}
+
+export async function fetchHostProfile(userId) {
+  if (!userId) return { data: null, error: null };
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, full_name, avatar_url, is_landlord, is_verified")
+    .eq("id", userId)
+    .maybeSingle();
+  return { data: data ?? null, error };
 }
 
 // ---------- image storage + records ----------
@@ -585,4 +682,46 @@ export async function deleteListingImage(publicUrl) {
   const path = decodeURIComponent(publicUrl.slice(idx + marker.length));
   const { error } = await supabase.storage.from(LISTINGS_BUCKET).remove([path]);
   return { error };
+}
+
+// ---------- contract template storage ----------
+
+/**
+ * Upload a landlord-supplied contract file (e.g. PDF/DOCX) to the private
+ * `listing-contracts` bucket. Returns the storage path which the caller
+ * persists to listings.contract_template_url.
+ */
+export async function uploadContractTemplate(ownerId, file) {
+  if (!ownerId) throw new Error("Missing ownerId");
+  if (!file) throw new Error("No file selected");
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `${ownerId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
+  const { error } = await supabase.storage
+    .from(CONTRACTS_BUCKET)
+    .upload(path, file, {
+      cacheControl: "3600",
+      upsert: false,
+      contentType: file.type || undefined,
+    });
+  if (error) throw error;
+  return { path, name: file.name };
+}
+
+/** Remove a previously uploaded contract template from storage. */
+export async function deleteContractTemplate(path) {
+  if (!path) return { error: null };
+  const { error } = await supabase.storage.from(CONTRACTS_BUCKET).remove([path]);
+  return { error };
+}
+
+/**
+ * Generate a short-lived signed URL so the owner can preview / download
+ * the uploaded contract from the private bucket.
+ */
+export async function getContractTemplateSignedUrl(path, expiresInSec = 3600) {
+  if (!path) return { url: null, error: null };
+  const { data, error } = await supabase.storage
+    .from(CONTRACTS_BUCKET)
+    .createSignedUrl(path, expiresInSec);
+  return { url: data?.signedUrl ?? null, error };
 }
