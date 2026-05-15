@@ -1,95 +1,156 @@
 import { supabase } from "./supabase";
 
 /**
- * Ask the create-payment-intent Edge Function for a Stripe client_secret
- * to use with <Elements> + <PaymentElement>. The amount and the
- * tenant-only authorization are enforced server-side; the browser only
- * passes the contract id and its session JWT (auto-attached by
- * supabase.functions.invoke).
+ * Ask the paymongo-create-payment-intent Edge Function for a
+ * PayMongo PaymentIntent. Amount and tenant-only authorization are
+ * enforced server-side; the browser only passes the contract id and
+ * its session JWT (auto-attached by supabase.functions.invoke).
  *
- * Returns { clientSecret, paymentIntentId, amount, currency } on success
- * or { error } on failure (auth, wrong-role, missing financials, etc).
+ * Returns { paymentIntentId, clientKey, amount, currency } on success
+ * or { error } on failure.
  */
-export async function createStripePaymentIntent(contractId) {
+export async function createPaymongoPaymentIntent(contractId) {
   if (!contractId) return { error: "Missing contractId" };
   const { data, error } = await supabase.functions.invoke(
-    "create-payment-intent",
+    "paymongo-create-payment-intent",
     { body: { contract_id: contractId } },
   );
-  if (error) {
-    // Edge Function errors come back wrapped — peel out the readable
-    // message when present.
-    const ctx = error?.context;
-    let msg = error.message ?? String(error);
-    if (ctx && typeof ctx.json === "function") {
-      try {
-        const body = await ctx.json();
-        if (body?.error) msg = body.error;
-      } catch { /* ignore */ }
-    }
-    return { error: msg };
-  }
+  if (error) return { error: await unwrapFnError(error) };
   if (data?.error) return { error: data.error };
   return data;
 }
 
 /**
- * After stripe.confirmPayment() resolves, ask the record-payment Edge
- * Function to verify the PaymentIntent against Stripe and write the
- * payment row + flip the contract to 'paid'. The webhook does the same
- * write asynchronously, but calling this on the client closes the loop
- * for the success page so the tenant sees confirmation immediately.
+ * Attach a PaymentMethod (card or e-wallet) to the PaymentIntent.
+ * The Edge Function does the actual attach with the secret key and
+ * returns the next status. For e-wallets, `next_action.redirect.url`
+ * is the destination to navigate to so the user can authorize.
+ *
+ * Returns { status, next_action, payment_method_id } or { error }.
  */
-export async function recordStripePayment(contractId, paymentIntentId) {
+export async function attachPaymentMethod({
+  paymentIntentId,
+  paymentMethodId,
+  returnUrl,
+  paymentMethodRecordId,
+}) {
+  if (!paymentIntentId || !paymentMethodId || !returnUrl) {
+    return { error: "Missing ids" };
+  }
+  const { data, error } = await supabase.functions.invoke(
+    "paymongo-attach-payment-method",
+    {
+      body: {
+        payment_intent_id:        paymentIntentId,
+        payment_method_id:        paymentMethodId,
+        return_url:               returnUrl,
+        payment_method_record_id: paymentMethodRecordId ?? null,
+      },
+    },
+  );
+  if (error) return { error: await unwrapFnError(error) };
+  if (data?.error) return { error: data.error };
+  return data;
+}
+
+/**
+ * After attach / redirect-return resolves successfully, ask the
+ * paymongo-record-payment Edge Function to re-fetch the PI from
+ * PayMongo, write the payment + ledger rows, and flip the contract
+ * to 'paid'. The webhook does the same write asynchronously; this
+ * call closes the loop for the success page.
+ */
+export async function recordPaymongoPayment(contractId, paymentIntentId) {
   if (!contractId || !paymentIntentId) return { error: "Missing ids" };
   const { data, error } = await supabase.functions.invoke(
-    "record-payment",
+    "paymongo-record-payment",
     { body: { contract_id: contractId, payment_intent_id: paymentIntentId } },
   );
-  if (error) {
-    const ctx = error?.context;
-    let msg = error.message ?? String(error);
-    if (ctx && typeof ctx.json === "function") {
-      try {
-        const body = await ctx.json();
-        if (body?.error) msg = body.error;
-      } catch { /* ignore */ }
-    }
-    return { error: msg };
-  }
+  if (error) return { error: await unwrapFnError(error) };
   if (data?.error) return { error: data.error };
   return { ok: true };
 }
 
 /**
- * All payments the current tenant has made, joined with contract +
- * listing context so the history row can render meaningful labels.
- * Mirrors mobile's `fetchMyPaymentsWithContext`.
+ * Mock-mode payment — bypasses PayMongo entirely. Server gates on
+ * MOCK_PAYMENTS_ENABLED env. Writes a synthetic succeeded payment +
+ * ledger row and flips contract/listing status.
  */
-export async function fetchMyPaymentsWithContext(tenantId) {
+export async function recordMockPayment({ contractId, paymentMethodRecordId }) {
+  if (!contractId || !paymentMethodRecordId) return { error: "Missing ids" };
+  const { data, error } = await supabase.functions.invoke(
+    "paymongo-record-mock-payment",
+    {
+      body: {
+        contract_id: contractId,
+        payment_method_record_id: paymentMethodRecordId,
+      },
+    },
+  );
+  if (error) return { error: await unwrapFnError(error) };
+  if (data?.error) return { error: data.error };
+  return data;
+}
+
+// ─── Backwards-compatible shims ──────────────────────────────────────────────
+// Kept for one release so any stale build that still imports the old
+// names doesn't crash mid-deploy. Delete after the next release.
+export const createStripePaymentIntent = createPaymongoPaymentIntent;
+export const recordStripePayment       = recordPaymongoPayment;
+
+/**
+ * All payment attempts the current tenant has made, joined with
+ * contract + listing context. Reads from the payment_transactions
+ * ledger (one row per attempt), not the `payment` table.
+ *
+ * Filters: status, methodType, dateFrom, dateTo are all optional.
+ * Shape returned is compatible with the existing MyPayments.jsx
+ * row renderer: { id, amount_cents, currency, status, paid_at,
+ * paymongo_payment_intent_id, contract_id, method_type, brand, last4,
+ * contract: { id, listings: { title } } }.
+ */
+export async function fetchMyPaymentsWithContext(tenantIdOrOpts) {
+  const opts = typeof tenantIdOrOpts === "string"
+    ? { tenantId: tenantIdOrOpts }
+    : (tenantIdOrOpts ?? {});
+  const { tenantId, status, methodType, dateFrom, dateTo } = opts;
   if (!tenantId) return { data: [], error: null };
-  const { data, error } = await supabase
-    .from("payment")
-    .select(`
-      id, amount_cents, currency, status, paid_at,
-      stripe_payment_intent_id, contract_id,
-      contract!inner ( id, tenant_id, listing_id,
-        listings ( title )
-      )
-    `)
-    .eq("contract.tenant_id", tenantId)
-    .order("paid_at", { ascending: false });
-  return { data: data ?? [], error };
+
+  let q = supabase
+    .from("payment_transactions_with_context")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .order("created_at", { ascending: false });
+
+  if (status)     q = q.eq("status", status);
+  if (methodType) q = q.eq("method_type", methodType);
+  if (dateFrom)   q = q.gte("created_at", dateFrom);
+  if (dateTo)     q = q.lte("created_at", dateTo);
+
+  const { data, error } = await q;
+  if (error) return { data: [], error };
+
+  const mapped = (data ?? []).map((r) => ({
+    id:                         r.id,
+    amount_cents:               r.amount_cents,
+    currency:                   r.currency,
+    status:                     r.status,
+    paid_at:                    r.created_at,
+    paymongo_payment_intent_id: r.paymongo_payment_intent_id,
+    contract_id:                r.contract_id,
+    method_type:                r.method_type,
+    brand:                      r.brand,
+    last4:                      r.last4,
+    failure_reason:             r.failure_reason,
+    contract: { id: r.contract_id, listings: { title: r.listing_title } },
+  }));
+  return { data: mapped, error: null };
 }
 
 /**
- * The next contract a tenant should pay — first fully_signed contract
- * (not yet paid) ordered by signing date. Pulls pricing from
- * listing_financials. Mirrors mobile's `fetchMyNextDueContract`.
- *
- * Kept for callers that want only the payable next contract; MyPayments
- * uses `fetchMyInProgressContracts` so it can also nudge tenants whose
- * contracts are still awaiting a signature.
+ * The next contract a tenant should pay — first fully_signed
+ * contract (not yet paid) ordered by signing date. Pulls pricing
+ * from listing_financials. Untouched by the PayMongo migration.
  */
 export async function fetchMyNextDueContract(tenantId) {
   if (!tenantId) return { data: null, error: null };
@@ -127,12 +188,8 @@ export async function fetchMyNextDueContract(tenantId) {
 }
 
 /**
- * Every in-progress contract the tenant is on (anything that isn't
- * already paid or cancelled). Lets MyPayments tell the tenant exactly
- * what to do next per contract — sign, wait on the landlord, or pay.
- *
- * Each row is enriched with listing financials so the page can show the
- * total move-in amount without a second round-trip per contract.
+ * Every in-progress contract the tenant is on. Untouched by the
+ * PayMongo migration.
  */
 export async function fetchMyInProgressContracts(tenantId) {
   if (!tenantId) return { data: [], error: null };
@@ -173,4 +230,18 @@ export async function fetchMyInProgressContracts(tenantId) {
     }),
     error: null,
   };
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+async function unwrapFnError(error) {
+  const ctx = error?.context;
+  let msg = error.message ?? String(error);
+  if (ctx && typeof ctx.json === "function") {
+    try {
+      const body = await ctx.json();
+      if (body?.error) msg = body.error;
+    } catch { /* ignore */ }
+  }
+  return msg;
 }

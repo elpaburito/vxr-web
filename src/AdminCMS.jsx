@@ -69,9 +69,9 @@ function Field({ label, children, hint }) {
 }
 
 const inputCls =
-  "w-full h-10 px-3 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-[#EC6138] focus:ring-2 focus:ring-orange-100";
+  "w-full h-10 px-3 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-vxr-accent focus:ring-2 focus:ring-orange-100";
 const textareaCls =
-  "w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-[#EC6138] focus:ring-2 focus:ring-orange-100";
+  "w-full px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-vxr-accent focus:ring-2 focus:ring-orange-100";
 
 // =====================================================
 // PAGES
@@ -121,7 +121,7 @@ function PagesTab() {
           </button>
           <button
             onClick={() => setEditing({ ...blankPage })}
-            className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-[#EC6138] rounded-lg hover:opacity-90"
+            className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-vxr-accent rounded-lg hover:opacity-90"
           >
             <Plus size={13} /> New page
           </button>
@@ -196,7 +196,7 @@ function PagesTab() {
             <button
               onClick={onSave}
               disabled={busy}
-              className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-[#EC6138] rounded-lg hover:opacity-90 disabled:opacity-60"
+              className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-vxr-accent rounded-lg hover:opacity-90 disabled:opacity-60"
             >
               <Save size={13} /> {busy ? "Saving…" : "Save"}
             </button>
@@ -294,7 +294,7 @@ function AnnouncementsTab() {
           </button>
           <button
             onClick={() => setEditing({ ...blankAnn })}
-            className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-[#EC6138] rounded-lg hover:opacity-90"
+            className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-vxr-accent rounded-lg hover:opacity-90"
           >
             <Plus size={13} /> New announcement
           </button>
@@ -372,7 +372,7 @@ function AnnouncementsTab() {
             <button
               onClick={onSave}
               disabled={busy}
-              className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-[#EC6138] rounded-lg hover:opacity-90 disabled:opacity-60"
+              className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-vxr-accent rounded-lg hover:opacity-90 disabled:opacity-60"
             >
               <Save size={13} /> {busy ? "Saving…" : "Save"}
             </button>
@@ -480,7 +480,7 @@ function FaqsTab() {
           </button>
           <button
             onClick={() => setEditing({ ...blankFaq })}
-            className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-[#EC6138] rounded-lg hover:opacity-90"
+            className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-vxr-accent rounded-lg hover:opacity-90"
           >
             <Plus size={13} /> New FAQ
           </button>
@@ -552,7 +552,7 @@ function FaqsTab() {
             <button
               onClick={onSave}
               disabled={busy}
-              className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-[#EC6138] rounded-lg hover:opacity-90 disabled:opacity-60"
+              className="h-9 px-3 inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-vxr-accent rounded-lg hover:opacity-90 disabled:opacity-60"
             >
               <Save size={13} /> {busy ? "Saving…" : "Save"}
             </button>

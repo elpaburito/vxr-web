@@ -10,9 +10,6 @@ import {
   isNcrRegion,
 } from "../lib/psgcService";
 
-const BRAND = "#F36C6C";
-
-// ─── Modal picker ─────────────────────────────────────────────────────
 function PickerModal({ title, items, onClose, onPick }) {
   const [query, setQuery] = useState("");
   const inputRef = useRef(null);
@@ -27,41 +24,39 @@ function PickerModal({ title, items, onClose, onPick }) {
   return (
     <div
       onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, zIndex: 1000,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 16,
-      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-vxr-text/40 backdrop-blur-sm"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col"
+        className="bg-vxr-surface rounded-vxr-sheet shadow-vxr-lg w-full max-w-lg flex flex-col"
         style={{ maxHeight: "80vh" }}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-          <h3 className="text-base font-bold text-gray-900">{title}</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-800" aria-label="Close">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-vxr-border">
+          <h3 className="font-display text-base font-extrabold text-vxr-text">{title}</h3>
+          <button
+            onClick={onClose}
+            className="text-vxr-text-sub hover:text-vxr-text"
+            aria-label="Close"
+          >
             <X size={18} />
           </button>
         </div>
-        <div className="px-5 pt-4 pb-2">
+        <div className="px-6 pt-4 pb-2">
           <div className="relative">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-vxr-text-muted" />
             <input
               ref={inputRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search…"
-              className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:border-transparent transition"
-              style={{ "--tw-ring-color": `${BRAND}66` }}
+              className="w-full pl-9 pr-3 py-2.5 bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md font-body text-sm text-vxr-text placeholder:text-vxr-text-muted outline-none focus:border-vxr-accent transition-colors"
             />
           </div>
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-3">
           {filtered.length === 0 ? (
-            <p className="text-center text-sm text-gray-500 py-8">
+            <p className="text-center font-body text-sm text-vxr-text-sub py-8">
               {q ? `No matches for "${query}"` : "No options available"}
             </p>
           ) : (
@@ -70,7 +65,7 @@ function PickerModal({ title, items, onClose, onPick }) {
                 <li key={it.code}>
                   <button
                     onClick={() => onPick(it)}
-                    className="w-full text-left px-4 py-2.5 text-sm text-gray-800 hover:bg-gray-50 rounded-lg transition"
+                    className="w-full text-left px-4 py-2.5 font-body text-sm text-vxr-text hover:bg-vxr-surface2 rounded-vxr-sm transition-colors"
                   >
                     {it.name}
                   </button>
@@ -84,7 +79,6 @@ function PickerModal({ title, items, onClose, onPick }) {
   );
 }
 
-// ─── Single row ───────────────────────────────────────────────────────
 function Row({ label, value, placeholder, loading, enabled, onClick }) {
   const has = value && value.length > 0;
   return (
@@ -92,19 +86,36 @@ function Row({ label, value, placeholder, loading, enabled, onClick }) {
       type="button"
       disabled={!enabled || loading}
       onClick={onClick}
-      className={`w-full flex items-center text-left px-3.5 py-2.5 rounded-xl border transition ${
-        enabled ? "bg-gray-50 border-gray-200 hover:border-gray-300" : "bg-gray-100 border-gray-200 cursor-not-allowed"
+      className={`w-full flex items-center text-left px-3.5 py-2.5 rounded-vxr-md border-[1.5px] transition-colors ${
+        enabled
+          ? "bg-vxr-surface2 border-vxr-border hover:border-vxr-border-strong"
+          : "bg-vxr-surface2/60 border-vxr-border cursor-not-allowed"
       }`}
     >
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] uppercase font-semibold text-gray-500 tracking-wide">{label}</p>
-        <p className={`text-sm mt-0.5 truncate ${has ? "text-gray-900 font-medium" : "text-gray-400"}`}>
+        <p className="font-body text-[10px] uppercase font-semibold text-vxr-text-sub tracking-wider">
+          {label}
+        </p>
+        <p
+          className={`font-body text-sm mt-0.5 truncate ${
+            has ? "text-vxr-text font-medium" : "text-vxr-text-muted"
+          }`}
+        >
           {has ? value : placeholder}
         </p>
       </div>
-      {loading
-        ? <Loader2 size={16} className="animate-spin text-gray-400 flex-shrink-0" />
-        : <ChevronDown size={18} className={enabled ? "text-gray-500 flex-shrink-0" : "text-gray-300 flex-shrink-0"} />}
+      {loading ? (
+        <Loader2 size={16} className="animate-spin text-vxr-text-muted flex-shrink-0" />
+      ) : (
+        <ChevronDown
+          size={18}
+          className={
+            enabled
+              ? "text-vxr-text-sub flex-shrink-0"
+              : "text-vxr-text-muted flex-shrink-0"
+          }
+        />
+      )}
     </button>
   );
 }
@@ -290,7 +301,7 @@ export default function PsgcLocationField({
         onClick={openBarangays}
       />
       {error && (
-        <p className="md:col-span-2 text-xs text-red-600">{error}</p>
+        <p className="md:col-span-2 font-body text-xs text-vxr-danger">{error}</p>
       )}
       {picker && (
         <PickerModal

@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { supabase, withTimeout } from "../lib/supabase";
+import { hasUserListings } from "../lib/profileService";
+import { hasActiveContract } from "../lib/contractsService";
 
 const AuthContext = createContext(null);
 
@@ -8,6 +10,8 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [hasListings, setHasListings] = useState(false);
+  const [hasRental, setHasRental] = useState(false);
 
   const loadProfile = useCallback(async (userId) => {
     if (!userId) {
@@ -34,6 +38,24 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
+  const loadRoleFlags = useCallback(async (userId) => {
+    if (!userId) {
+      setHasListings(false);
+      setHasRental(false);
+      return;
+    }
+    try {
+      const [listings, rental] = await Promise.all([
+        withTimeout(hasUserListings(userId), 10000, "Role flags: listings").catch(() => false),
+        withTimeout(hasActiveContract(userId), 10000, "Role flags: contract").catch(() => false),
+      ]);
+      setHasListings(!!listings);
+      setHasRental(!!rental);
+    } catch (err) {
+      console.error("[Auth] loadRoleFlags exception:", err);
+    }
+  }, []);
+
   // Initial session load + auth state subscription. The two key invariants:
   //   1. setLoading(false) ALWAYS runs (even on timeout/error)
   //   2. loadProfile() never blocks the auth path — it's fire-and-forget so a
@@ -56,6 +78,7 @@ export function AuthProvider({ children }) {
         if (initialSession?.user) {
           // fire-and-forget so a slow profile fetch can't gate the whole app
           loadProfile(initialSession.user.id);
+          loadRoleFlags(initialSession.user.id);
         }
       } catch (err) {
         console.error("[Auth] init failed:", err);
@@ -70,8 +93,11 @@ export function AuthProvider({ children }) {
       setUser(newSession?.user ?? null);
       if (newSession?.user) {
         loadProfile(newSession.user.id);
+        loadRoleFlags(newSession.user.id);
       } else {
         setProfile(null);
+        setHasListings(false);
+        setHasRental(false);
       }
     });
 
@@ -79,7 +105,7 @@ export function AuthProvider({ children }) {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [loadProfile]);
+  }, [loadProfile, loadRoleFlags]);
 
   const signIn = async ({ email, password }) => {
     const { data, error } = await withTimeout(
@@ -135,7 +161,9 @@ export function AuthProvider({ children }) {
   };
 
   const refreshProfile = async () => {
-    if (user?.id) await loadProfile(user.id);
+    if (user?.id) {
+      await Promise.all([loadProfile(user.id), loadRoleFlags(user.id)]);
+    }
   };
 
   const value = {
@@ -143,6 +171,8 @@ export function AuthProvider({ children }) {
     user,
     profile,
     loading,
+    hasListings,
+    hasRental,
     isAuthenticated: !!session,
     signIn,
     signUp,

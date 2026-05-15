@@ -5,6 +5,7 @@ import {
   Plus, Trash2, ShieldCheck, FileText, AlertTriangle, X, Lock,
 } from "lucide-react";
 import { useAuth } from "./context/AuthContext.jsx";
+import NotificationBell from "./components/NotificationBell.jsx";
 import {
   getTerminationState,
   addDeduction,
@@ -16,7 +17,7 @@ import {
   DEDUCTION_CATEGORIES,
 } from "./lib/postRentService";
 
-const BRAND  = "#F36C6C";
+const BRAND  = "#FF7043";
 const INK    = "#101321";
 const MUTED  = "#6B7280";
 const BG     = "#FAF7F6";
@@ -188,10 +189,11 @@ export default function MoveOutChecklist() {
           <button onClick={() => navigate(-1)} className="p-2 rounded-xl hover:bg-slate-100">
             <ArrowLeft size={20} style={{ color: INK }} />
           </button>
-          <div>
+          <div className="flex-1">
             <h1 className="text-base font-bold" style={{ color: INK }}>Move-Out Checklist</h1>
             <p className="text-[11px]" style={{ color: MUTED }}>Contract #{state.contract.id.slice(0, 8)}</p>
           </div>
+          <NotificationBell framed />
         </div>
       </header>
 
@@ -482,7 +484,7 @@ function AddDeductionModal({ busy, onClose, onSubmit }) {
             step="0.01"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
-            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#F36C6C]/40"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-vxr-accent/40 focus:border-vxr-accent"
           />
         </label>
 
@@ -493,7 +495,7 @@ function AddDeductionModal({ busy, onClose, onSubmit }) {
             onChange={(e) => setDescription(e.target.value)}
             rows={2}
             placeholder="e.g. broken bathroom mirror"
-            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#F36C6C]/40"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-vxr-accent/40 focus:border-vxr-accent"
           />
         </label>
 
@@ -524,7 +526,7 @@ function WaiveBalanceModal({ busy, onClose, onSubmit }) {
           value={note}
           onChange={(e) => setNote(e.target.value)}
           placeholder="Reason (optional)"
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#F36C6C]/40"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-vxr-accent/40 focus:border-vxr-accent"
         />
         <div className="mt-4 flex gap-2 justify-end">
           <button type="button" onClick={onClose} disabled={busy} className="px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold hover:bg-slate-50" style={{ color: INK }}>Cancel</button>
@@ -556,7 +558,7 @@ function ForceCloseModal({ busy, onClose, onSubmit }) {
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="Reason (required)"
-          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#F36C6C]/40"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-vxr-accent/40 focus:border-vxr-accent"
         />
         <div className="mt-4 flex gap-2 justify-end">
           <button type="button" onClick={onClose} disabled={busy} className="px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold hover:bg-slate-50" style={{ color: INK }}>Cancel</button>

@@ -1,22 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleMap, Marker, useJsApiLoader } from "@react-google-maps/api";
 import { Loader2, MapPin, X, Crosshair } from "lucide-react";
+import { Button } from "./vxr";
 
-const BRAND = "#F36C6C";
-const DARK = "#E85D5D";
-
-const DEFAULT_CENTER = { lat: 14.5995, lng: 120.9842 }; // Manila
+const DEFAULT_CENTER = { lat: 14.5995, lng: 120.9842 };
 
 const containerStyle = { width: "100%", height: "100%" };
 
-// Must stay identical (id + libraries + array identity) to the loader
-// options used by SearchPage and UnitDetails — @react-google-maps/api's
-// global Loader throws "must not be called again with different options"
-// if any field, including the libraries array reference, differs.
 const MAP_LIBRARIES = ["places"];
 
-// Parse Google's address_components into our four slots, mirroring
-// _parseAddressComponents in mobile manage_listing.dart.
 function parseComponents(components) {
   let city = "", province = "", barangay = "", postalCode = "";
   for (const comp of components ?? []) {
@@ -48,12 +40,16 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
 
   const mapRef = useRef(null);
   const debounceRef = useRef(null);
+  // Tracks whether the last position change came from a direct map click.
+  // Click ownership wins for ~600ms so the click handler's geocode isn't
+  // immediately overwritten by the onIdle handler (which fires next as
+  // the map settles after panTo).
+  const clickLockRef = useRef(0);
 
   const reverseGeocode = useCallback(async (latlng) => {
     setLoadingAddr(true);
     try {
-      const url =
-        `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latlng.lat},${latlng.lng}&key=${apiKey}`;
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latlng.lat},${latlng.lng}&key=${apiKey}`;
       const res = await fetch(url);
       const json = await res.json();
       if (json.status === "OK" && json.results?.[0]) {
@@ -72,13 +68,26 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
     }
   }, [apiKey]);
 
-  // Initial geocode for the starting position
   useEffect(() => {
     reverseGeocode(initialPosition ?? DEFAULT_CENTER);
   }, [initialPosition, reverseGeocode]);
 
+  const onMapClick = (e) => {
+    if (!e?.latLng) return;
+    const next = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+    clickLockRef.current = Date.now();
+    setPos(next);
+    mapRef.current?.panTo(next);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => reverseGeocode(next), 200);
+  };
+
   const onIdle = () => {
     if (!mapRef.current) return;
+    // Honor a recent click — the click handler already set position +
+    // queued geocoding for the exact click point. The pan-to-center
+    // settles via this idle event but should NOT overwrite the click.
+    if (Date.now() - clickLockRef.current < 600) return;
     const c = mapRef.current.getCenter();
     if (!c) return;
     const next = { lat: c.lat(), lng: c.lng() };
@@ -118,38 +127,36 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
   return (
     <div
       onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, zIndex: 1100,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 16,
-      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-vxr-text/40 backdrop-blur-sm"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl flex flex-col overflow-hidden"
+        className="bg-vxr-surface rounded-vxr-sheet shadow-vxr-lg w-full max-w-3xl flex flex-col overflow-hidden"
         style={{ maxHeight: "90vh" }}
       >
-        <div
-          className="flex items-center justify-between px-5 py-3 text-white"
-          style={{ background: `linear-gradient(135deg, ${BRAND} 0%, ${DARK} 100%)` }}
-        >
+        <div className="flex items-center justify-between px-6 py-4 bg-vxr-gradient text-white">
           <div className="flex items-center gap-2">
             <MapPin size={18} />
-            <h3 className="text-base font-bold">Pick Property Location</h3>
+            <h3 className="font-display text-base font-extrabold">
+              Pick Property Location
+            </h3>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg" aria-label="Close">
+          <button
+            onClick={onClose}
+            className="p-1.5 hover:bg-white/20 rounded-vxr-sm transition-colors"
+            aria-label="Close"
+          >
             <X size={18} />
           </button>
         </div>
 
         <div className="relative" style={{ height: 420 }}>
           {!apiKey ? (
-            <div className="h-full w-full flex items-center justify-center text-sm text-gray-600 px-6 text-center">
+            <div className="h-full w-full flex items-center justify-center font-body text-sm text-vxr-text-sub px-6 text-center">
               Google Maps API key is not configured (VITE_GOOGLE_MAPS_API_KEY).
             </div>
           ) : !isLoaded ? (
-            <div className="h-full w-full flex items-center justify-center text-gray-500">
+            <div className="h-full w-full flex items-center justify-center font-body text-vxr-text-sub">
               <Loader2 className="animate-spin mr-2" size={18} /> Loading map…
             </div>
           ) : (
@@ -157,7 +164,10 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
               mapContainerStyle={containerStyle}
               center={center}
               zoom={16}
-              onLoad={(m) => { mapRef.current = m; }}
+              onLoad={(m) => {
+                mapRef.current = m;
+              }}
+              onClick={onMapClick}
               onIdle={onIdle}
               options={{
                 disableDefaultUI: false,
@@ -174,52 +184,44 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
           <button
             type="button"
             onClick={useMyLocation}
-            className="absolute top-3 right-3 flex items-center gap-1.5 bg-white px-3 py-1.5 rounded-full shadow-md text-xs font-semibold text-gray-700 hover:bg-gray-50"
+            className="absolute top-3 right-3 flex items-center gap-1.5 bg-vxr-surface px-3 py-1.5 rounded-full shadow-vxr-md font-body text-xs font-semibold text-vxr-text hover:bg-vxr-surface2 border border-vxr-border"
             title="Use my location"
           >
-            <Crosshair size={13} color={BRAND} />
+            <Crosshair size={13} className="text-vxr-accent" />
             My Location
           </button>
         </div>
 
-        <div className="px-5 py-4">
+        <div className="px-6 py-4">
           <div className="flex items-start gap-2 mb-3">
-            <MapPin size={18} color={BRAND} className="mt-0.5 flex-shrink-0" />
+            <MapPin size={18} className="text-vxr-accent mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               {loadingAddr ? (
-                <div className="flex items-center gap-2 text-sm text-gray-500">
+                <div className="flex items-center gap-2 font-body text-sm text-vxr-text-sub">
                   <Loader2 size={14} className="animate-spin" /> Getting address…
                 </div>
               ) : (
-                <p className="text-sm font-medium text-gray-800">{address}</p>
+                <p className="font-body text-sm font-medium text-vxr-text">{address}</p>
               )}
             </div>
           </div>
 
           {!loadingAddr && (parts.city || parts.province || parts.barangay) && (
-            <div className="bg-gray-50 rounded-xl p-3 mb-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-              {parts.city      && <Pair label="City"      value={parts.city} />}
-              {parts.province  && <Pair label="Province"  value={parts.province} />}
-              {parts.barangay  && <Pair label="Barangay"  value={parts.barangay} />}
-              {parts.postalCode && <Pair label="Postal"    value={parts.postalCode} />}
+            <div className="bg-vxr-surface2 rounded-vxr-md p-3 mb-3 grid grid-cols-2 gap-x-4 gap-y-1.5 font-body text-xs">
+              {parts.city && <Pair label="City" value={parts.city} />}
+              {parts.province && <Pair label="Province" value={parts.province} />}
+              {parts.barangay && <Pair label="Barangay" value={parts.barangay} />}
+              {parts.postalCode && <Pair label="Postal" value={parts.postalCode} />}
             </div>
           )}
 
           <div className="flex justify-end gap-2">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200 transition"
-            >
+            <Button variant="secondary" size="sm" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              onClick={confirm}
-              disabled={loadingAddr}
-              className="px-4 py-2 text-sm font-semibold text-white rounded-xl transition hover:opacity-90 disabled:opacity-60"
-              style={{ background: `linear-gradient(135deg, ${BRAND} 0%, ${DARK} 100%)` }}
-            >
+            </Button>
+            <Button size="sm" disabled={loadingAddr} onClick={confirm}>
               Confirm Location
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -230,8 +232,8 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
 function Pair({ label, value }) {
   return (
     <div className="flex">
-      <span className="text-gray-500 w-16 flex-shrink-0">{label}</span>
-      <span className="text-gray-800 font-medium truncate">{value}</span>
+      <span className="text-vxr-text-sub w-16 flex-shrink-0">{label}</span>
+      <span className="text-vxr-text font-medium truncate">{value}</span>
     </div>
   );
 }

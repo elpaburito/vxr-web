@@ -5,14 +5,15 @@ import {
   FileEdit, Camera as CameraIcon, Rocket,
   Users, ShieldCheck, LayoutDashboard, BadgeDollarSign,
   CheckCircle2, PlusCircle,
-  MapPin, Upload, Image as ImageIcon, X, Bell,
+  MapPin, Upload, Image as ImageIcon, X,
   Loader2, AlertCircle, Crosshair, Search,
   Hourglass, ShieldAlert,
   Repeat, FileSignature,
   Eye, FileText, Trash2, ExternalLink,
   RotateCcw, Edit3, ChevronDown, ChevronUp,
 } from "lucide-react";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import ProfileButton from "./components/ProfileButton.jsx";
+import NotificationBell from "./components/NotificationBell.jsx";
 import PsgcLocationField from "./components/PsgcLocationField.jsx";
 import MapAddressPicker from "./components/MapAddressPicker.jsx";
 import ContractTemplatePreview from "./components/ContractTemplatePreview.jsx";
@@ -32,7 +33,7 @@ import {
 import { getVerificationStatus } from "./lib/profileService";
 
 // ─── Brand tokens ──────────────────────────────────────────────────────────────
-const BRAND   = "#F36C6C";
+const BRAND   = "#FF7043";
 const DARK    = "#E85D5D";
 const INK     = "#1A1A2E";
 const MUTED   = "#6B7280";
@@ -234,7 +235,6 @@ export default function HouseEnlistment() {
   const navigate   = useNavigate();
   const location   = useLocation();
   const { user, loading: authLoading } = useAuth();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   const queryParams = new URLSearchParams(location.search);
   const editId      = queryParams.get("edit");
@@ -672,9 +672,8 @@ export default function HouseEnlistment() {
       <div
         className="sticky top-0 z-50"
         style={{ background: `linear-gradient(135deg, ${BRAND} 0%, ${DARK} 100%)` }}
-        onClick={() => setDropdownOpen(false)}
       >
-        <div className="max-w-5xl mx-auto px-5 py-3 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
+        <div className="max-w-5xl mx-auto px-5 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button
               onClick={() => isEditMode ? navigate("/my-listings") : setView("intro")}
@@ -684,7 +683,10 @@ export default function HouseEnlistment() {
             >
               <ArrowLeft size={20} color="white" />
             </button>
-            <div className="flex items-center gap-2">
+            <div
+              onClick={() => navigate("/home2")}
+              className="flex items-center gap-2 cursor-pointer"
+            >
               <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm">
                 <span className="font-black text-base" style={{ color: BRAND }}>V</span>
               </div>
@@ -692,38 +694,8 @@ export default function HouseEnlistment() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => navigate("/home2")} className="p-2 rounded-xl" style={{ background: "rgba(255,255,255,0.15)" }}>
-              <Bell size={18} color="white" />
-            </button>
-            <div style={{ position: "relative" }}>
-              <button
-                onClick={() => setDropdownOpen((o) => !o)}
-                aria-label="Open profile menu"
-                style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  background: "white", border: "none", cursor: "pointer",
-                  borderRadius: 999, padding: "5px 14px 5px 6px",
-                  boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-                }}
-              >
-                <div style={{
-                  width: 34, height: 34, borderRadius: "50%",
-                  background: "linear-gradient(135deg, #EC6138, #FF8E9E)",
-                  color: "white", fontWeight: 700,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 14,
-                }}>
-                  {(user?.email || "?").charAt(0).toUpperCase()}
-                </div>
-                <div style={{
-                  width: 0, height: 0,
-                  borderLeft: "6px solid transparent",
-                  borderRight: "6px solid transparent",
-                  borderTop: "8px solid #222",
-                }} />
-              </button>
-              {dropdownOpen && <ProfileDropdown onLogout={() => setDropdownOpen(false)} />}
-            </div>
+            <NotificationBell iconColor="white" dotBorderColor="white" />
+            <ProfileButton />
           </div>
         </div>
 
@@ -1300,7 +1272,7 @@ export default function HouseEnlistment() {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-2xl p-5 cursor-pointer hover:border-[#F36C6C] transition">
+              <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-2xl p-5 cursor-pointer hover:border-vxr-accent transition">
                 <input type="file" accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `${BRAND}1A` }}>
                   <ImageIcon size={20} color={BRAND} />
@@ -1317,7 +1289,7 @@ export default function HouseEnlistment() {
                 <p className="text-xs text-gray-400">Coming soon</p>
               </div>
 
-              <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-2xl p-5 cursor-pointer hover:border-[#F36C6C] transition">
+              <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-2xl p-5 cursor-pointer hover:border-vxr-accent transition">
                 <input type="file" accept="image/*" onChange={(e) => {
                   const file = e.target.files[0]; if (!file) return;
                   setNewImageFiles((prev) => [file, ...prev]);

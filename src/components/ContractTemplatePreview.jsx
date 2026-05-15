@@ -189,35 +189,31 @@ export default function ContractTemplatePreview({ formData, hostName, onClose })
   return (
     <div
       onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, zIndex: 1100,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 16,
-      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-vxr-text/40 backdrop-blur-sm"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl shadow-2xl w-full"
-        style={{ maxHeight: "92vh", maxWidth: 880, display: "flex", flexDirection: "column" }}
+        className="bg-vxr-surface rounded-vxr-sheet shadow-vxr-lg w-full flex flex-col"
+        style={{ maxHeight: "92vh", maxWidth: 880 }}
       >
-        {/* Modal toolbar */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+        <div className="flex items-center justify-between px-6 py-3 border-b border-vxr-border">
           <div className="flex items-center gap-2">
             <span
-              className="inline-flex items-center px-2.5 py-1 rounded-full text-[10.5px] font-bold tracking-wide"
+              className="inline-flex items-center px-2.5 py-1 rounded-full font-body text-[10.5px] font-bold tracking-wide"
               style={{ background: `${theme.accent}1A`, color: theme.accent }}
             >
               {contractTypeLabel}
             </span>
-            <h3 className="text-sm font-semibold text-gray-700">Contract Template Preview</h3>
+            <h3 className="font-display text-sm font-bold text-vxr-text">
+              Contract Template Preview
+            </h3>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleExport}
               disabled={exporting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white rounded-lg transition hover:opacity-90 disabled:opacity-70"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 font-body text-xs font-semibold text-white rounded-vxr-md transition hover:opacity-90 disabled:opacity-70"
               style={{ background: theme.accent }}
             >
               {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
@@ -226,19 +222,22 @@ export default function ContractTemplatePreview({ formData, hostName, onClose })
             <button
               type="button"
               onClick={() => window.print()}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 font-body text-xs font-semibold text-vxr-text bg-vxr-surface2 rounded-vxr-md hover:bg-vxr-surface3"
               title="Print this preview"
             >
               <Printer size={13} /> Print
             </button>
-            <button onClick={onClose} className="p-1.5 text-gray-500 hover:text-gray-800" aria-label="Close">
+            <button
+              onClick={onClose}
+              className="p-1.5 text-vxr-text-sub hover:text-vxr-text"
+              aria-label="Close"
+            >
               <X size={18} />
             </button>
           </div>
         </div>
 
-        {/* Scrollable contract body — also used as the print-window source */}
-        <div className="overflow-y-auto" style={{ background: "#F4F6FA", padding: 18 }}>
+        <div className="overflow-y-auto bg-vxr-bg p-4">
           <div ref={printRef} style={{ background: "#fff", borderRadius: 12, overflow: "hidden", boxShadow: "0 1px 6px rgba(15,23,42,0.06)" }}>
             <div className="banner" style={sX.banner}>
               <h1 style={sX.title}>{title}</h1>

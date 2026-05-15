@@ -2,19 +2,27 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft, ArrowRight, Check, Upload, Loader2, AlertCircle,
-  User, Briefcase, Home, ShieldCheck, FileText, X, ImageOff,
+  User, Briefcase, Home, Wallet, FileText, X, ImageOff,
 } from "lucide-react";
 import { useAuth } from "./context/AuthContext.jsx";
+import NotificationBell from "./components/NotificationBell.jsx";
 import { submitApplication } from "./lib/applicationsService";
 import { fetchListingById } from "./lib/listingsService";
+import {
+  validateApplicationStep, employmentNeedsDetails,
+} from "./lib/applicationValidation";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// Identity is now collected once via /profile (IdentityVerificationModal)
+// and gated server-side in submitApplication, so the form no longer has
+// a separate ID-upload step. Proof of income stays — it's a financial
+// fitness signal, distinct from identity.
 const STEPS = [
   { id: 1, label: "Personal",    icon: User },
   { id: 2, label: "Employment",  icon: Briefcase },
   { id: 3, label: "Rental",      icon: Home },
-  { id: 4, label: "Identity",    icon: ShieldCheck },
+  { id: 4, label: "Income",      icon: Wallet },
   { id: 5, label: "Declaration", icon: FileText },
 ];
 
@@ -34,8 +42,6 @@ const EMPLOYMENT_LENGTH_OPTIONS = [
   "2 – 5 years",
   "5+ years",
 ];
-
-const INCOME_STATUS_NO_DETAILS = ["Unemployed", "Student", "Retired"];
 
 const INITIAL_FORM = {
   // Step 1
@@ -65,8 +71,6 @@ const INITIAL_FORM = {
 };
 
 const INITIAL_DOCS = {
-  validIdFront: null,
-  validIdBack: null,
   proofOfIncome: null,
 };
 
@@ -123,6 +127,17 @@ export default function RentalApplicationForm() {
     if (isAuthenticated === false) navigate("/login");
   }, [isAuthenticated, navigate]);
 
+  // Identity-verification gate. Mirrors the server-side gate in
+  // submitApplication so the tenant doesn't waste time filling out a form
+  // they can't submit. Bounces to /profile?verify=1 which auto-opens the
+  // verification wizard.
+  useEffect(() => {
+    if (isAuthenticated === true && profile && profile.is_verified === false) {
+      alert("Please verify your identity before applying.");
+      navigate("/profile?verify=1", { replace: true });
+    }
+  }, [isAuthenticated, profile, navigate]);
+
   const update = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
     setErrors((prev) => ({ ...prev, [field]: undefined }));
@@ -136,45 +151,7 @@ export default function RentalApplicationForm() {
   // ── Validation ──────────────────────────────────────────────────────────────
 
   const validate = (targetStep) => {
-    const e = {};
-    if (targetStep === 1) {
-      if (!formData.fullName.trim())       e.fullName       = "Full name is required";
-      if (!formData.dateOfBirth)           e.dateOfBirth    = "Date of birth is required";
-      if (!formData.contactNumber.trim())  e.contactNumber  = "Contact number is required";
-      if (!formData.email.trim())          e.email          = "Email is required";
-      else if (!/\S+@\S+\.\S+/.test(formData.email)) e.email = "Enter a valid email";
-      if (!formData.currentAddress.trim()) e.currentAddress = "Current address is required";
-    }
-    if (targetStep === 2) {
-      if (!formData.employmentStatus) e.employmentStatus = "Employment status is required";
-      const needsDetails = formData.employmentStatus && !INCOME_STATUS_NO_DETAILS.includes(formData.employmentStatus);
-      if (needsDetails) {
-        if (!formData.jobTitle.trim())       e.jobTitle       = "Job title is required";
-        if (!formData.companyName.trim())    e.companyName    = "Company name is required";
-        if (!formData.monthlyIncome)         e.monthlyIncome  = "Monthly income is required";
-        if (!formData.lengthOfEmployment)    e.lengthOfEmployment = "Length of employment is required";
-        if (!formData.workAddress.trim())    e.workAddress    = "Work address is required";
-      }
-    }
-    if (targetStep === 3) {
-      if (!formData.firstTimeRenter)          e.firstTimeRenter = "Please select an option";
-      if (formData.firstTimeRenter === "No") {
-        if (!formData.previousAddress.trim()) e.previousAddress   = "Previous address is required";
-        if (!formData.rentalDuration)         e.rentalDuration    = "Rental duration is required";
-        if (!formData.reasonForLeaving.trim())e.reasonForLeaving  = "Reason for leaving is required";
-        if (!formData.landlordName.trim())    e.landlordName      = "Landlord name is required";
-        if (!formData.landlordPhone.trim())   e.landlordPhone     = "Landlord contact is required";
-      }
-    }
-    if (targetStep === 4) {
-      if (!docs.validIdFront)   e.validIdFront   = "Front of valid ID is required";
-      if (!docs.validIdBack)    e.validIdBack    = "Back of valid ID is required";
-      if (!docs.proofOfIncome)  e.proofOfIncome  = "Proof of income is required";
-    }
-    if (targetStep === 5) {
-      if (!formData.consentIdentity)   e.consentIdentity   = "You must consent to identity verification";
-      if (!formData.consentDataPrivacy) e.consentDataPrivacy = "You must agree to the data privacy policy";
-    }
+    const e = validateApplicationStep(formData, docs, targetStep);
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -230,12 +207,12 @@ export default function RentalApplicationForm() {
           <div className="flex flex-col gap-3">
             <button
               onClick={() => navigate(`/unit/${listingId}`)}
-              className="h-12 rounded-xl bg-gradient-to-r from-[#EC6138] to-[#FF8E9E] text-white font-semibold hover:opacity-90 transition"
+              className="h-12 rounded-xl bg-gradient-to-r bg-vxr-gradient text-white font-semibold hover:opacity-90 transition"
             >
               Back to Listing
             </button>
             <button
-              onClick={() => navigate("/home")}
+              onClick={() => navigate("/home2")}
               className="h-12 rounded-xl border border-slate-200 text-slate-700 font-semibold hover:bg-slate-50 transition"
             >
               Go to Home
@@ -246,8 +223,7 @@ export default function RentalApplicationForm() {
     );
   }
 
-  const needsEmploymentDetails =
-    formData.employmentStatus && !INCOME_STATUS_NO_DETAILS.includes(formData.employmentStatus);
+  const needsEmploymentDetails = employmentNeedsDetails(formData.employmentStatus);
 
   return (
     <div className="min-h-screen bg-[#F4F4F6] flex flex-col">
@@ -271,6 +247,7 @@ export default function RentalApplicationForm() {
           <span className="text-xs text-slate-500 font-semibold bg-slate-100 px-2.5 py-1 rounded-full">
             {step} / 5
           </span>
+          <NotificationBell framed />
         </div>
       </header>
 
@@ -296,7 +273,7 @@ export default function RentalApplicationForm() {
               <p className="text-xs text-slate-500 truncate">{listing.location}</p>
             </div>
             <div className="text-right flex-shrink-0">
-              <p className="font-bold text-[#EC6138] text-sm">₱{(listing.monthlyRent ?? 0).toLocaleString()}</p>
+              <p className="font-bold text-vxr-accent text-sm">₱{(listing.monthlyRent ?? 0).toLocaleString()}</p>
               <p className="text-[11px] text-slate-400">/month</p>
             </div>
           </div>
@@ -366,7 +343,7 @@ export default function RentalApplicationForm() {
             <button
               onClick={goNext}
               className="flex-1 h-12 rounded-xl text-white font-semibold transition flex items-center justify-center gap-2 hover:opacity-90"
-              style={{ background: "linear-gradient(135deg,#EC6138,#FF8E9E)" }}
+              style={{ background: "linear-gradient(135deg,#FF7043,#FF8A80)" }}
             >
               Continue
               <ArrowRight size={16} />
@@ -376,7 +353,7 @@ export default function RentalApplicationForm() {
               onClick={handleSubmit}
               disabled={submitting}
               className="flex-1 h-12 rounded-xl text-white font-semibold transition flex items-center justify-center gap-2 disabled:opacity-60 hover:opacity-90"
-              style={{ background: "linear-gradient(135deg,#EC6138,#FF8E9E)" }}
+              style={{ background: "linear-gradient(135deg,#FF7043,#FF8A80)" }}
             >
               {submitting ? (
                 <><Loader2 size={16} className="animate-spin" /> Submitting…</>
@@ -408,11 +385,11 @@ function StepBar({ current }) {
                   ${done   ? "bg-emerald-500 text-white shadow-sm"
                   : active ? "text-white shadow-md"
                   :          "bg-slate-100 text-slate-400"}`}
-                style={active ? { background: "linear-gradient(135deg,#EC6138,#FF8E9E)" } : undefined}
+                style={active ? { background: "linear-gradient(135deg,#FF7043,#FF8A80)" } : undefined}
               >
                 {done ? <Check size={14} strokeWidth={2.5} /> : <Icon size={14} />}
               </div>
-              <span className={`text-[10px] font-semibold leading-none ${active ? "text-[#EC6138]" : done ? "text-emerald-600" : "text-slate-400"}`}>
+              <span className={`text-[10px] font-semibold leading-none ${active ? "text-vxr-accent" : done ? "text-emerald-600" : "text-slate-400"}`}>
                 {s.label}
               </span>
             </div>
@@ -452,8 +429,8 @@ function Field({ label, required, error, children }) {
 }
 
 const inputClass = (err) =>
-  `w-full px-4 py-2.5 rounded-xl border text-sm text-slate-900 bg-[#F5F5F7] focus:outline-none focus:ring-2 focus:ring-[#EC6138]/40 transition placeholder:text-slate-400 ${
-    err ? "border-red-400" : "border-slate-200 focus:border-[#EC6138]"
+  `w-full px-4 py-2.5 rounded-xl border text-sm text-slate-900 bg-[#F5F5F7] focus:outline-none focus:ring-2 focus:ring-vxr-accent/40 transition placeholder:text-slate-400 ${
+    err ? "border-red-400" : "border-slate-200 focus:border-vxr-accent"
   }`;
 
 function Input({ error, ...props }) {
@@ -623,10 +600,10 @@ function Step3({ data, errors, onChange }) {
               className={`flex-1 h-11 rounded-xl font-semibold text-sm transition border ${
                 data.firstTimeRenter === opt
                   ? "text-white border-transparent"
-                  : "bg-[#F5F5F7] text-slate-600 border-slate-200 hover:border-[#EC6138]"
+                  : "bg-[#F5F5F7] text-slate-600 border-slate-200 hover:border-vxr-accent"
               }`}
               style={data.firstTimeRenter === opt
-                ? { background: "linear-gradient(135deg,#EC6138,#FF8E9E)", border: "none" }
+                ? { background: "linear-gradient(135deg,#FF7043,#FF8A80)", border: "none" }
                 : undefined}
             >
               {opt}
@@ -697,35 +674,23 @@ function Step3({ data, errors, onChange }) {
   );
 }
 
-// ─── Step 4: Identity Verification ────────────────────────────────────────────
+// ─── Step 4: Proof of Income ──────────────────────────────────────────────────
 
 function Step4({ docs, errors, setDoc }) {
   return (
-    <FormCard title="Identity Verification" subtitle="Upload clear photos or scans of your documents">
-      <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 mb-2">
-        Accepted formats: JPG, PNG, PDF · Max 10 MB per file
+    <FormCard
+      title="Proof of Income"
+      subtitle="Help the landlord assess affordability"
+    >
+      <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-xs text-emerald-700 mb-2">
+        Your government-issued ID has already been verified during identity
+        verification — no need to upload it again here.
       </div>
 
       <FileUploadCard
-        label="Valid ID – Front"
-        required
-        hint="Front side of any government-issued ID"
-        file={docs.validIdFront}
-        error={errors.validIdFront}
-        onChange={(file) => setDoc("validIdFront", file)}
-      />
-      <FileUploadCard
-        label="Valid ID – Back"
-        required
-        hint="Back side of the same ID"
-        file={docs.validIdBack}
-        error={errors.validIdBack}
-        onChange={(file) => setDoc("validIdBack", file)}
-      />
-      <FileUploadCard
         label="Proof of Income"
         required
-        hint="Payslip, COE, or bank statement (last 3 months)"
+        hint="Payslip, COE, or bank statement (last 3 months) · JPG, PNG, or PDF"
         file={docs.proofOfIncome}
         error={errors.proofOfIncome}
         onChange={(file) => setDoc("proofOfIncome", file)}
@@ -769,7 +734,7 @@ function FileUploadCard({ label, required, hint, file, error, onChange }) {
             <img src={preview} alt={label} className="w-full max-h-40 object-contain py-3" />
           ) : (
             <div className="flex items-center gap-3 px-4 py-3">
-              <FileText size={20} className="text-[#EC6138] flex-shrink-0" />
+              <FileText size={20} className="text-vxr-accent flex-shrink-0" />
               <span className="text-sm text-slate-700 truncate flex-1">{file.name}</span>
             </div>
           )}
@@ -785,7 +750,7 @@ function FileUploadCard({ label, required, hint, file, error, onChange }) {
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
-          className={`w-full border-2 border-dashed rounded-xl px-4 py-6 flex flex-col items-center gap-2 transition hover:border-[#EC6138] hover:bg-orange-50 ${
+          className={`w-full border-2 border-dashed rounded-xl px-4 py-6 flex flex-col items-center gap-2 transition hover:border-vxr-accent hover:bg-orange-50 ${
             error ? "border-red-400 bg-red-50" : "border-slate-200 bg-[#F5F5F7]"
           }`}
         >
@@ -869,7 +834,7 @@ function ConsentCheckbox({ id, checked, onChange, error, label }) {
       <label
         htmlFor={id}
         className={`flex items-start gap-3 cursor-pointer rounded-xl border p-3 transition ${
-          checked ? "border-[#EC6138] bg-orange-50" : error ? "border-red-400 bg-red-50" : "border-slate-200 hover:border-[#EC6138]"
+          checked ? "border-vxr-accent bg-orange-50" : error ? "border-red-400 bg-red-50" : "border-slate-200 hover:border-vxr-accent"
         }`}
       >
         <button
@@ -879,7 +844,7 @@ function ConsentCheckbox({ id, checked, onChange, error, label }) {
           aria-checked={checked}
           onClick={() => onChange(!checked)}
           className={`mt-0.5 w-5 h-5 rounded-md border-2 flex-shrink-0 flex items-center justify-center transition ${
-            checked ? "bg-[#EC6138] border-[#EC6138]" : error ? "border-red-400" : "border-slate-300"
+            checked ? "bg-vxr-accent border-vxr-accent" : error ? "border-red-400" : "border-slate-300"
           }`}
         >
           {checked && <Check size={11} className="text-white" strokeWidth={3} />}

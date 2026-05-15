@@ -52,6 +52,24 @@ export async function submitApplication({ listingId, tenantId, landlordId, formD
     }
   }
 
+  // Identity-verification gate. Mirrors the mobile ensureVerifiedToApply()
+  // check (verification_screen.dart:959-981). Keeps unverified tenants out
+  // even if the UI is bypassed.
+  if (tenantId) {
+    const { data: tenantProfile, error: profErr } = await supabase
+      .from("profiles")
+      .select("is_verified")
+      .eq("id", tenantId)
+      .maybeSingle();
+    if (profErr) return { data: null, error: profErr };
+    if (!tenantProfile?.is_verified) {
+      return {
+        data: null,
+        error: new Error("Please verify your identity before applying."),
+      };
+    }
+  }
+
   // Guard: check for an existing application (avoids hitting the unique constraint)
   const { data: existing, error: existErr } = await supabase
     .from("application")
@@ -180,9 +198,48 @@ export async function submitApplication({ listingId, tenantId, landlordId, formD
   return { data, error: null };
 }
 
+function maskIdNumber(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (s.length <= 4) return s;
+  const last4 = s.slice(-4);
+  return `•••• ${last4}`;
+}
+
+/**
+ * Fetch the latest approved verification for a single tenant, but only if
+ * the calling landlord has an application from that tenant. Uses the
+ * SECURITY DEFINER RPC `get_tenant_verification` so we can read past the
+ * owner-only RLS on the verifications table without exposing PII broadly.
+ * Returns null on missing RPC (older DBs) or RPC failure — degrades the
+ * landlord view gracefully rather than breaking it.
+ */
+async function fetchVerificationForTenant(tenantId) {
+  if (!tenantId) return null;
+  const { data, error } = await supabase.rpc("get_tenant_verification", {
+    p_tenant_id: tenantId,
+  });
+  if (error) {
+    console.warn("[applications] verification rpc failed:", error.message);
+    return null;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
+  return {
+    id_type: row.id_type,
+    extracted_name: row.extracted_name,
+    extracted_id_number_masked: maskIdNumber(row.extracted_id_number),
+    extracted_dob: row.extracted_dob,
+    processed_at: row.processed_at,
+    decision: row.decision,
+  };
+}
+
 /**
  * Fetch all applications for a landlord's listings.
  * Joins listing title for the group-by-unit view.
+ * Also attaches each tenant's latest approved identity-verification record
+ * (PII-safe shape — see fetchVerificationForTenant) as `application.verification`.
  */
 export async function fetchLandlordApplications(landlordId) {
   if (!landlordId) return { data: [], error: null };
@@ -207,13 +264,29 @@ export async function fetchLandlordApplications(landlordId) {
     `)
     .eq("landlord_id", landlordId)
     .order("submitted_at", { ascending: false, nullsFirst: false });
+
+  if (error) return { data: null, error };
+
+  // Hydrate one verification per unique tenant (parallel RPC calls).
+  const tenantIds = [...new Set((data ?? []).map((r) => r.tenant_id).filter(Boolean))];
+  const verifications = new Map();
+  if (tenantIds.length > 0) {
+    const results = await Promise.all(
+      tenantIds.map((id) => fetchVerificationForTenant(id).then((v) => [id, v]))
+    );
+    for (const [id, v] of results) {
+      if (v) verifications.set(id, v);
+    }
+  }
+
   // Mirror submitted_at into created_at so the rest of the UI (which
   // expects created_at) keeps working.
   const normalized = (data ?? []).map((row) => ({
     ...row,
     created_at: row.created_at ?? row.submitted_at ?? null,
+    verification: verifications.get(row.tenant_id) ?? null,
   }));
-  return { data: normalized, error };
+  return { data: normalized, error: null };
 }
 
 /**
@@ -276,6 +349,7 @@ export async function fetchTenantApplications(tenantId) {
 
 /**
  * Update the status of an application (landlord action).
+ * `tenantId` is optional — when provided, the tenant is notified of the change.
  */
 export async function updateApplicationStatus(applicationId, status) {
   const { error } = await supabase

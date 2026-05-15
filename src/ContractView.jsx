@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  Home, Bell, ArrowLeft, Download, Check, CreditCard,
+  ArrowLeft, Download, Check, CreditCard,
   FileText, AlertCircle, Edit3, Shield, Building2, Calendar,
   X, Loader2, Hourglass,
 } from "lucide-react";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import AppHeader from "./components/AppHeader.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import {
   fetchContractById, updateContract, signContract, resetContractSignatures,
@@ -27,8 +27,7 @@ const STATUS_BADGE = {
 export default function ContractView() {
   const navigate = useNavigate();
   const { id } = useParams();
-  const { user, profile, isAuthenticated } = useAuth();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const { user, isAuthenticated } = useAuth();
 
   const [contract, setContract] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -109,8 +108,6 @@ export default function ContractView() {
   const isTenant   = !!user?.id && user.id === contract.tenantId;
   const myRole = isLandlord ? "landlord" : isTenant ? "tenant" : null;
 
-  const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
-
   const handleField = (key, value) => {
     setContract((prev) => ({ ...prev, [key]: value }));
   };
@@ -168,18 +165,11 @@ export default function ContractView() {
   };
 
   const inputCls = (extra = "") =>
-    `w-full bg-white border border-slate-200 rounded-md px-2.5 py-1.5 text-[13px] text-slate-900 outline-none focus:border-[#EC6138] focus:ring-2 focus:ring-orange-100 transition disabled:bg-slate-50 disabled:text-slate-500 ${extra}`;
+    `w-full bg-white border border-slate-200 rounded-md px-2.5 py-1.5 text-[13px] text-slate-900 outline-none focus:border-vxr-accent focus:ring-2 focus:ring-orange-100 transition disabled:bg-slate-50 disabled:text-slate-500 ${extra}`;
 
   return (
-    <div className="w-full min-h-screen bg-[#F4F4F6] flex flex-col print:bg-white">
-      <Header
-        navigate={navigate}
-        dropdownOpen={dropdownOpen}
-        setDropdownOpen={setDropdownOpen}
-        initial={initial}
-        isAuthenticated={isAuthenticated}
-        onBack={() => navigate(-1)}
-      />
+    <div className="w-full min-h-screen bg-vxr-bg flex flex-col print:bg-white">
+      <Header onBack={() => navigate(-1)} />
 
       {/* Status banner */}
       <div className="bg-white border-b border-slate-100 print:hidden">
@@ -499,7 +489,7 @@ export default function ContractView() {
                   type="button"
                   onClick={handleProceedPayment}
                   className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white rounded-lg shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all"
-                  style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+                  style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
                 >
                   <CreditCard size={14} />
                   Proceed to Payment
@@ -517,7 +507,7 @@ export default function ContractView() {
                     type="button"
                     onClick={() => requestSign("landlord")}
                     className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-sm hover:shadow-md transition"
-                    style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+                    style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
                   >
                     Sign as Landlord
                   </button>
@@ -527,7 +517,7 @@ export default function ContractView() {
                     type="button"
                     onClick={() => requestSign("tenant")}
                     className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-sm hover:shadow-md transition"
-                    style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+                    style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
                   >
                     Sign as Tenant
                   </button>
@@ -838,7 +828,7 @@ function SignModal({ role, defaultName, accent, onCancel, onConfirm }) {
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g., Juan Dela Cruz"
             autoFocus
-            className="w-full bg-white border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 outline-none focus:border-[#EC6138] focus:ring-2 focus:ring-orange-100 transition"
+            className="w-full bg-white border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 outline-none focus:border-vxr-accent focus:ring-2 focus:ring-orange-100 transition"
           />
         </div>
 
@@ -858,7 +848,7 @@ function SignModal({ role, defaultName, accent, onCancel, onConfirm }) {
             type="checkbox"
             checked={agreed}
             onChange={(e) => setAgreed(e.target.checked)}
-            className="w-4 h-4 mt-0.5 accent-[#EC6138]"
+            className="w-4 h-4 mt-0.5 accent-vxr-accent"
           />
           <span className="text-xs text-slate-600 leading-relaxed">
             I agree that this electronic signature is the legal equivalent of my
@@ -898,7 +888,7 @@ function NotFound({ onBack }) {
       </p>
       <button
         onClick={onBack}
-        className="mt-4 px-4 py-2 bg-[#EC6138] text-white rounded-lg font-semibold text-sm hover:opacity-90 transition"
+        className="mt-4 px-4 py-2 bg-vxr-accent text-white rounded-lg font-semibold text-sm hover:opacity-90 transition"
       >
         Back to Applications
       </button>
@@ -1027,81 +1017,10 @@ function PrintStyles() {
   );
 }
 
-// ============================================================================
-// Header
-// ============================================================================
-
-function Header({ navigate, dropdownOpen, setDropdownOpen, initial, isAuthenticated, onBack }) {
+function Header({ onBack }) {
   return (
-    <nav
-      className="sticky top-0 z-50 print:hidden"
-      style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-      onClick={() => setDropdownOpen(false)}
-    >
-      <div
-        style={{ width: "100%", padding: "10px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <button
-            onClick={onBack}
-            style={{
-              background: "rgba(255,255,255,0.22)",
-              border: "none", cursor: "pointer",
-              width: 36, height: 36, borderRadius: 10,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}
-            aria-label="Back"
-          >
-            <ArrowLeft size={18} color="white" />
-          </button>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shadow-sm">
-              <span className="font-black text-lg" style={{ color: "#e8756a" }}>V</span>
-            </div>
-            <div className="flex flex-col">
-              <span className="font-bold text-white text-[15px] tracking-wide leading-none">
-                Contract
-              </span>
-              <span className="text-[10px] text-white/70 mt-0.5 font-medium">ViewxRent</span>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
-          <button onClick={() => navigate("/home2")} style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 4,
-          }}>
-            <Home size={22} color="white" />
-          </button>
-          <button style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 4, position: "relative",
-          }}>
-            <Bell size={22} color="white" />
-          </button>
-          {isAuthenticated && (
-            <button onClick={() => setDropdownOpen(!dropdownOpen)} style={{
-              display: "flex", alignItems: "center", gap: 8,
-              background: "white", border: "none", cursor: "pointer",
-              borderRadius: 999, padding: "5px 14px 5px 6px",
-              boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-            }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: "50%",
-                background: "linear-gradient(135deg, #EC6138, #FF8E9E)",
-                color: "white", fontWeight: 700,
-                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
-              }}>
-                {initial}
-              </div>
-              <div style={{ width: 0, height: 0, borderLeft: "6px solid transparent", borderRight: "6px solid transparent", borderTop: "8px solid #222" }} />
-            </button>
-          )}
-          {dropdownOpen && <ProfileDropdown />}
-        </div>
-      </div>
-    </nav>
+    <div className="print:hidden">
+      <AppHeader showBack onBack={onBack} />
+    </div>
   );
 }

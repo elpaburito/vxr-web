@@ -508,8 +508,12 @@ WHERE id IN (
   SELECT DISTINCT landlord_id FROM public.listings WHERE landlord_id IS NOT NULL
 ) AND is_landlord = false;
 
--- Grandfather existing profiles as verified
-UPDATE public.profiles SET is_verified = true WHERE is_verified = false;
+-- NOTE: previously this file ran
+--   UPDATE public.profiles SET is_verified = true WHERE is_verified = false;
+-- to grandfather every existing profile as verified. That contradicted the
+-- intent of profiles.is_verified once the identity-verification gate landed
+-- (a verified flag must mean "the user passed AI/admin checks"), so it has
+-- been removed. New users start with is_verified = false (column default).
 
 -- Profiles RLS — cross-party reads for contract screens and chat
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
@@ -605,6 +609,7 @@ SELECT
   p.method       AS payment_method_label,
   p.status       AS payment_status,
   p.stripe_payment_intent_id,
+  p.paymongo_payment_intent_id,
   p.last4,
   p.name         AS payer_name
 FROM public.contract ct

@@ -1,6 +1,7 @@
-// ApplicationModal.jsx
+﻿// ApplicationModal.jsx
 import { useEffect, useState } from "react";
 import { X, ChevronLeft, ChevronRight, Check, Upload, AlertCircle, Loader2 } from "lucide-react";
+import { validateApplicationStep } from "../lib/applicationValidation";
 
 const EMPTY_FORM = {
   // Step 1 - Personal Information
@@ -27,9 +28,8 @@ const EMPTY_FORM = {
   landlordPhone: "",
   landlordEmail: "",
 
-  // Step 4 - Identity Verification
-  validIdFront: null,
-  validIdBack: null,
+  // Step 4 - Proof of Income (identity is now handled by the dedicated
+  // verification flow on /profile; no ID uploads collected here)
   proofOfIncome: null,
 
   // Step 5 - Declaration & Consent
@@ -72,50 +72,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
   };
 
   const validateStep = () => {
-    const newErrors = {};
-    
-    if (step === 1) {
-      if (!formData.fullName.trim()) newErrors.fullName = "Full name is required";
-      if (!formData.dateOfBirth) newErrors.dateOfBirth = "Date of birth is required";
-      if (!formData.contactNumber.trim()) newErrors.contactNumber = "Contact number is required";
-      if (!formData.email.trim()) newErrors.email = "Email is required";
-      if (!formData.currentAddress.trim()) newErrors.currentAddress = "Current address is required";
-    }
-    
-    if (step === 2) {
-      if (!formData.employmentStatus) newErrors.employmentStatus = "Employment status is required";
-      if (formData.employmentStatus !== "Unemployed" && formData.employmentStatus !== "Student" && formData.employmentStatus !== "Retired") {
-        if (!formData.jobTitle.trim()) newErrors.jobTitle = "Job title is required";
-        if (!formData.companyName.trim()) newErrors.companyName = "Company name is required";
-        if (!formData.monthlyIncome) newErrors.monthlyIncome = "Monthly income is required";
-        if (!formData.lengthOfEmployment) newErrors.lengthOfEmployment = "Length of employment is required";
-        if (!formData.workAddress.trim()) newErrors.workAddress = "Work address is required";
-      }
-    }
-    
-    if (step === 3) {
-      if (!formData.firstTimeRenter) newErrors.firstTimeRenter = "Please select an option";
-      if (formData.firstTimeRenter === "No") {
-        if (!formData.previousAddress.trim()) newErrors.previousAddress = "Previous address is required";
-        if (!formData.rentalDuration) newErrors.rentalDuration = "Rental duration is required";
-        if (!formData.reasonForLeaving.trim()) newErrors.reasonForLeaving = "Reason for leaving is required";
-        if (!formData.landlordName.trim()) newErrors.landlordName = "Landlord name is required";
-        if (!formData.landlordPhone.trim()) newErrors.landlordPhone = "Landlord phone is required";
-        if (!formData.landlordEmail.trim()) newErrors.landlordEmail = "Landlord email is required";
-      }
-    }
-    
-    if (step === 4) {
-      if (!formData.validIdFront) newErrors.validIdFront = "Front of valid ID is required";
-      if (!formData.validIdBack) newErrors.validIdBack = "Back of valid ID is required";
-      if (!formData.proofOfIncome) newErrors.proofOfIncome = "Proof of income is required";
-    }
-    
-    if (step === 5) {
-      if (!formData.consentIdentity) newErrors.consentIdentity = "You must consent to identity verification";
-      if (!formData.consentDataPrivacy) newErrors.consentDataPrivacy = "You must agree to the data privacy agreement";
-    }
-    
+    // proofOfIncome lives inside formData here (not a separate docs map),
+    // so synthesize a docs object for the shared validator.
+    const docs = { proofOfIncome: formData.proofOfIncome };
+    const newErrors = validateApplicationStep(formData, docs, step);
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -158,13 +118,13 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
           <div
             className={`w-10 h-10 rounded-full flex items-center justify-center font-semibold transition-all
               ${step >= num 
-                ? "bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white shadow-md" 
+                ? "bg-gradient-to-r bg-vxr-gradient text-white shadow-md" 
                 : "bg-gray-200 text-gray-500"}`}
           >
             {step > num ? <Check size={18} /> : num}
           </div>
           {num < 5 && (
-            <div className={`w-12 h-0.5 mx-2 ${step > num ? "bg-[#e8756a]" : "bg-gray-200"}`} />
+            <div className={`w-12 h-0.5 mx-2 ${step > num ? "bg-vxr-accent" : "bg-gray-200"}`} />
           )}
         </div>
       ))}
@@ -186,10 +146,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   type="text"
                   value={formData.fullName}
                   onChange={(e) => updateFormData("fullName", e.target.value)}
-                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.fullName ? "border-red-500" : "border-gray-300"}`}
+                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.fullName ? "border-vxr-danger" : "border-gray-300"}`}
                   placeholder="Juan Dela Cruz"
                 />
-                {errors.fullName && <p className="text-red-500 text-xs mt-1">{errors.fullName}</p>}
+                {errors.fullName && <p className="text-vxr-danger text-xs mt-1">{errors.fullName}</p>}
               </div>
               
               <div>
@@ -198,9 +158,9 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   type="date"
                   value={formData.dateOfBirth}
                   onChange={(e) => updateFormData("dateOfBirth", e.target.value)}
-                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.dateOfBirth ? "border-red-500" : "border-gray-300"}`}
+                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.dateOfBirth ? "border-vxr-danger" : "border-gray-300"}`}
                 />
-                {errors.dateOfBirth && <p className="text-red-500 text-xs mt-1">{errors.dateOfBirth}</p>}
+                {errors.dateOfBirth && <p className="text-vxr-danger text-xs mt-1">{errors.dateOfBirth}</p>}
               </div>
               
               <div>
@@ -209,10 +169,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   type="tel"
                   value={formData.contactNumber}
                   onChange={(e) => updateFormData("contactNumber", e.target.value)}
-                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.contactNumber ? "border-red-500" : "border-gray-300"}`}
+                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.contactNumber ? "border-vxr-danger" : "border-gray-300"}`}
                   placeholder="+63 912 345 6789"
                 />
-                {errors.contactNumber && <p className="text-red-500 text-xs mt-1">{errors.contactNumber}</p>}
+                {errors.contactNumber && <p className="text-vxr-danger text-xs mt-1">{errors.contactNumber}</p>}
               </div>
               
               <div>
@@ -221,10 +181,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   type="email"
                   value={formData.email}
                   onChange={(e) => updateFormData("email", e.target.value)}
-                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.email ? "border-red-500" : "border-gray-300"}`}
+                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.email ? "border-vxr-danger" : "border-gray-300"}`}
                   placeholder="juan@example.com"
                 />
-                {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
+                {errors.email && <p className="text-vxr-danger text-xs mt-1">{errors.email}</p>}
               </div>
               
               <div>
@@ -232,11 +192,11 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                 <textarea
                   value={formData.currentAddress}
                   onChange={(e) => updateFormData("currentAddress", e.target.value)}
-                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.currentAddress ? "border-red-500" : "border-gray-300"}`}
+                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.currentAddress ? "border-vxr-danger" : "border-gray-300"}`}
                   rows="2"
                   placeholder="Your current residential address"
                 />
-                {errors.currentAddress && <p className="text-red-500 text-xs mt-1">{errors.currentAddress}</p>}
+                {errors.currentAddress && <p className="text-vxr-danger text-xs mt-1">{errors.currentAddress}</p>}
               </div>
             </div>
           </div>
@@ -254,7 +214,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                 <select
                   value={formData.employmentStatus}
                   onChange={(e) => updateFormData("employmentStatus", e.target.value)}
-                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.employmentStatus ? "border-red-500" : "border-gray-300"}`}
+                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.employmentStatus ? "border-vxr-danger" : "border-gray-300"}`}
                 >
                   <option value="">Select employment status</option>
                   <option value="Employed">Employed</option>
@@ -264,7 +224,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   <option value="Unemployed">Unemployed</option>
                   <option value="Retired">Retired</option>
                 </select>
-                {errors.employmentStatus && <p className="text-red-500 text-xs mt-1">{errors.employmentStatus}</p>}
+                {errors.employmentStatus && <p className="text-vxr-danger text-xs mt-1">{errors.employmentStatus}</p>}
               </div>
               
               {formData.employmentStatus && formData.employmentStatus !== "Unemployed" && formData.employmentStatus !== "Student" && formData.employmentStatus !== "Retired" && (
@@ -275,10 +235,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="text"
                       value={formData.jobTitle}
                       onChange={(e) => updateFormData("jobTitle", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.jobTitle ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.jobTitle ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="Software Engineer"
                     />
-                    {errors.jobTitle && <p className="text-red-500 text-xs mt-1">{errors.jobTitle}</p>}
+                    {errors.jobTitle && <p className="text-vxr-danger text-xs mt-1">{errors.jobTitle}</p>}
                   </div>
                   
                   <div>
@@ -287,10 +247,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="text"
                       value={formData.companyName}
                       onChange={(e) => updateFormData("companyName", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.companyName ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.companyName ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="Company Inc."
                     />
-                    {errors.companyName && <p className="text-red-500 text-xs mt-1">{errors.companyName}</p>}
+                    {errors.companyName && <p className="text-vxr-danger text-xs mt-1">{errors.companyName}</p>}
                   </div>
                   
                   <div>
@@ -299,10 +259,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="number"
                       value={formData.monthlyIncome}
                       onChange={(e) => updateFormData("monthlyIncome", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.monthlyIncome ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.monthlyIncome ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="50000"
                     />
-                    {errors.monthlyIncome && <p className="text-red-500 text-xs mt-1">{errors.monthlyIncome}</p>}
+                    {errors.monthlyIncome && <p className="text-vxr-danger text-xs mt-1">{errors.monthlyIncome}</p>}
                   </div>
                   
                   <div>
@@ -310,7 +270,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                     <select
                       value={formData.lengthOfEmployment}
                       onChange={(e) => updateFormData("lengthOfEmployment", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.lengthOfEmployment ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.lengthOfEmployment ? "border-vxr-danger" : "border-gray-300"}`}
                     >
                       <option value="">Select duration</option>
                       <option value="Less than 6 months">Less than 6 months</option>
@@ -319,7 +279,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       <option value="2 - 5 years">2 - 5 years</option>
                       <option value="5+ years">5+ years</option>
                     </select>
-                    {errors.lengthOfEmployment && <p className="text-red-500 text-xs mt-1">{errors.lengthOfEmployment}</p>}
+                    {errors.lengthOfEmployment && <p className="text-vxr-danger text-xs mt-1">{errors.lengthOfEmployment}</p>}
                   </div>
                   
                   <div>
@@ -327,11 +287,11 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                     <textarea
                       value={formData.workAddress}
                       onChange={(e) => updateFormData("workAddress", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.workAddress ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.workAddress ? "border-vxr-danger" : "border-gray-300"}`}
                       rows="2"
                       placeholder="Your work address"
                     />
-                    {errors.workAddress && <p className="text-red-500 text-xs mt-1">{errors.workAddress}</p>}
+                    {errors.workAddress && <p className="text-vxr-danger text-xs mt-1">{errors.workAddress}</p>}
                   </div>
                 </>
               )}
@@ -354,7 +314,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                     onClick={() => updateFormData("firstTimeRenter", "Yes")}
                     className={`px-6 py-2 rounded-lg font-medium transition ${
                       formData.firstTimeRenter === "Yes" 
-                        ? "bg-[#e8756a] text-white" 
+                        ? "bg-vxr-accent text-white" 
                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                     }`}
                   >
@@ -365,14 +325,14 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                     onClick={() => updateFormData("firstTimeRenter", "No")}
                     className={`px-6 py-2 rounded-lg font-medium transition ${
                       formData.firstTimeRenter === "No" 
-                        ? "bg-[#e8756a] text-white" 
+                        ? "bg-vxr-accent text-white" 
                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                     }`}
                   >
                     No
                   </button>
                 </div>
-                {errors.firstTimeRenter && <p className="text-red-500 text-xs mt-1">{errors.firstTimeRenter}</p>}
+                {errors.firstTimeRenter && <p className="text-vxr-danger text-xs mt-1">{errors.firstTimeRenter}</p>}
               </div>
               
               {formData.firstTimeRenter === "No" && (
@@ -383,10 +343,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="text"
                       value={formData.previousAddress}
                       onChange={(e) => updateFormData("previousAddress", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.previousAddress ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.previousAddress ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="Your previous rental address"
                     />
-                    {errors.previousAddress && <p className="text-red-500 text-xs mt-1">{errors.previousAddress}</p>}
+                    {errors.previousAddress && <p className="text-vxr-danger text-xs mt-1">{errors.previousAddress}</p>}
                   </div>
                   
                   <div>
@@ -395,10 +355,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="text"
                       value={formData.rentalDuration}
                       onChange={(e) => updateFormData("rentalDuration", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.rentalDuration ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.rentalDuration ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="e.g., 2 years"
                     />
-                    {errors.rentalDuration && <p className="text-red-500 text-xs mt-1">{errors.rentalDuration}</p>}
+                    {errors.rentalDuration && <p className="text-vxr-danger text-xs mt-1">{errors.rentalDuration}</p>}
                   </div>
                   
                   <div>
@@ -407,10 +367,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="text"
                       value={formData.reasonForLeaving}
                       onChange={(e) => updateFormData("reasonForLeaving", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.reasonForLeaving ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.reasonForLeaving ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="e.g., Lease ended, Relocation"
                     />
-                    {errors.reasonForLeaving && <p className="text-red-500 text-xs mt-1">{errors.reasonForLeaving}</p>}
+                    {errors.reasonForLeaving && <p className="text-vxr-danger text-xs mt-1">{errors.reasonForLeaving}</p>}
                   </div>
                   
                   <div>
@@ -419,10 +379,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="text"
                       value={formData.landlordName}
                       onChange={(e) => updateFormData("landlordName", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.landlordName ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.landlordName ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="Previous landlord's name"
                     />
-                    {errors.landlordName && <p className="text-red-500 text-xs mt-1">{errors.landlordName}</p>}
+                    {errors.landlordName && <p className="text-vxr-danger text-xs mt-1">{errors.landlordName}</p>}
                   </div>
                   
                   <div>
@@ -431,10 +391,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="tel"
                       value={formData.landlordPhone}
                       onChange={(e) => updateFormData("landlordPhone", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.landlordPhone ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.landlordPhone ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="Contact number"
                     />
-                    {errors.landlordPhone && <p className="text-red-500 text-xs mt-1">{errors.landlordPhone}</p>}
+                    {errors.landlordPhone && <p className="text-vxr-danger text-xs mt-1">{errors.landlordPhone}</p>}
                   </div>
                   
                   <div>
@@ -443,10 +403,10 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                       type="email"
                       value={formData.landlordEmail}
                       onChange={(e) => updateFormData("landlordEmail", e.target.value)}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#e8756a] ${errors.landlordEmail ? "border-red-500" : "border-gray-300"}`}
+                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-vxr-accent ${errors.landlordEmail ? "border-vxr-danger" : "border-gray-300"}`}
                       placeholder="Landlord's email"
                     />
-                    {errors.landlordEmail && <p className="text-red-500 text-xs mt-1">{errors.landlordEmail}</p>}
+                    {errors.landlordEmail && <p className="text-vxr-danger text-xs mt-1">{errors.landlordEmail}</p>}
                   </div>
                 </div>
               )}
@@ -457,45 +417,25 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
       case 4:
         return (
           <div>
-            <h2 className="text-xl font-bold text-gray-800 mb-2">Identity Verification</h2>
+            <h2 className="text-xl font-bold text-gray-800 mb-2">Proof of Income</h2>
             <p className="text-sm text-gray-500 mb-6">Step 4 of 5</p>
-            
+
+            <div className="mb-4 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-100 text-xs text-emerald-700">
+              Your identity has been verified separately on your profile, so
+              we no longer collect a copy of your ID here.
+            </div>
+
             <div className="space-y-5">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Valid Government ID (Front)</label>
-                <div className="mt-1 flex items-center gap-3">
-                  <label className={`flex-1 flex items-center justify-between px-4 py-2 border rounded-lg cursor-pointer hover:bg-gray-50 transition ${errors.validIdFront ? "border-red-500" : "border-gray-300"}`}>
-                    <span className="text-sm text-gray-600">{formData.validIdFront ? formData.validIdFront.name : "Choose File"}</span>
-                    <Upload size={18} className="text-gray-400" />
-                    <input type="file" className="hidden" accept="image/*,.pdf" onChange={(e) => handleFileChange("validIdFront", e)} />
-                  </label>
-                </div>
-                {errors.validIdFront && <p className="text-red-500 text-xs mt-1">{errors.validIdFront}</p>}
-                <p className="text-xs text-gray-400 mt-1">Accepted: JPG, PNG, PDF (Max 5MB)</p>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Valid Government ID (Back)</label>
-                <div className="mt-1 flex items-center gap-3">
-                  <label className={`flex-1 flex items-center justify-between px-4 py-2 border rounded-lg cursor-pointer hover:bg-gray-50 transition ${errors.validIdBack ? "border-red-500" : "border-gray-300"}`}>
-                    <span className="text-sm text-gray-600">{formData.validIdBack ? formData.validIdBack.name : "Choose File"}</span>
-                    <Upload size={18} className="text-gray-400" />
-                    <input type="file" className="hidden" accept="image/*,.pdf" onChange={(e) => handleFileChange("validIdBack", e)} />
-                  </label>
-                </div>
-                {errors.validIdBack && <p className="text-red-500 text-xs mt-1">{errors.validIdBack}</p>}
-              </div>
-              
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Proof of Income (Certificate of Employment)</label>
                 <div className="mt-1 flex items-center gap-3">
-                  <label className={`flex-1 flex items-center justify-between px-4 py-2 border rounded-lg cursor-pointer hover:bg-gray-50 transition ${errors.proofOfIncome ? "border-red-500" : "border-gray-300"}`}>
+                  <label className={`flex-1 flex items-center justify-between px-4 py-2 border rounded-lg cursor-pointer hover:bg-gray-50 transition ${errors.proofOfIncome ? "border-vxr-danger" : "border-gray-300"}`}>
                     <span className="text-sm text-gray-600">{formData.proofOfIncome ? formData.proofOfIncome.name : "Choose File"}</span>
                     <Upload size={18} className="text-gray-400" />
                     <input type="file" className="hidden" accept="image/*,.pdf" onChange={(e) => handleFileChange("proofOfIncome", e)} />
                   </label>
                 </div>
-                {errors.proofOfIncome && <p className="text-red-500 text-xs mt-1">{errors.proofOfIncome}</p>}
+                {errors.proofOfIncome && <p className="text-vxr-danger text-xs mt-1">{errors.proofOfIncome}</p>}
                 <p className="text-xs text-gray-400 mt-1">COE, Payslip, or Bank Statement</p>
               </div>
             </div>
@@ -514,22 +454,22 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   type="checkbox"
                   checked={formData.consentIdentity}
                   onChange={(e) => updateFormData("consentIdentity", e.target.checked)}
-                  className="mt-0.5 w-4 h-4 text-[#e8756a] rounded focus:ring-[#e8756a]"
+                  className="mt-0.5 w-4 h-4 text-vxr-accent rounded focus:ring-vxr-accent"
                 />
                 <span className="text-sm text-gray-700">I consent to identity verification</span>
               </label>
-              {errors.consentIdentity && <p className="text-red-500 text-xs mt-1 ml-7">{errors.consentIdentity}</p>}
+              {errors.consentIdentity && <p className="text-vxr-danger text-xs mt-1 ml-7">{errors.consentIdentity}</p>}
               
               <label className="flex items-start gap-3 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={formData.consentDataPrivacy}
                   onChange={(e) => updateFormData("consentDataPrivacy", e.target.checked)}
-                  className="mt-0.5 w-4 h-4 text-[#e8756a] rounded focus:ring-[#e8756a]"
+                  className="mt-0.5 w-4 h-4 text-vxr-accent rounded focus:ring-vxr-accent"
                 />
                 <span className="text-sm text-gray-700">I agree to the data privacy agreement</span>
               </label>
-              {errors.consentDataPrivacy && <p className="text-red-500 text-xs mt-1 ml-7">{errors.consentDataPrivacy}</p>}
+              {errors.consentDataPrivacy && <p className="text-vxr-danger text-xs mt-1 ml-7">{errors.consentDataPrivacy}</p>}
               
               <div className="bg-gray-50 rounded-lg p-4 mt-4">
                 <p className="text-xs text-gray-500">
@@ -560,7 +500,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
           {/* Modal Panel */}
           <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-auto overflow-hidden animate-fade-in-up">
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-[#e8756a] to-[#f0a090]">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gradient-to-r bg-vxr-gradient">
               <div>
                 <h3 className="text-lg font-semibold text-white">Apply for Rental</h3>
                 <p className="text-sm text-white text-opacity-90">{unitTitle}</p>
@@ -582,7 +522,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                 <div className="px-6 py-3 bg-orange-50 border-b border-orange-100">
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-gray-600">Monthly Rent:</span>
-                    <span className="font-semibold text-[#e8756a]">
+                    <span className="font-semibold text-vxr-accent">
                       {priceNum > 0 ? `${display}/month` : display}
                     </span>
                   </div>
@@ -592,7 +532,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   </div>
                   <div className="flex justify-between items-center mt-1 pt-1 border-t border-orange-200">
                     <span className="text-sm font-medium text-gray-700">Initial Payment:</span>
-                    <span className="font-bold text-[#e8756a]">{initial}</span>
+                    <span className="font-bold text-vxr-accent">{initial}</span>
                   </div>
                 </div>
               );
@@ -621,7 +561,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
               {step < 5 ? (
                 <button
                   onClick={handleNext}
-                  className="px-5 py-2 bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white rounded-lg font-medium hover:opacity-90 transition flex items-center gap-2 shadow-md"
+                  className="px-5 py-2 bg-gradient-to-r bg-vxr-gradient text-white rounded-lg font-medium hover:opacity-90 transition flex items-center gap-2 shadow-md"
                 >
                   Next
                   <ChevronRight size={18} />
@@ -630,14 +570,14 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                 <button
                   onClick={handleSubmitClick}
                   disabled={submitting}
-                  className="px-5 py-2 bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white rounded-lg font-medium hover:opacity-90 transition shadow-md disabled:opacity-60 flex items-center gap-2"
+                  className="px-5 py-2 bg-gradient-to-r bg-vxr-gradient text-white rounded-lg font-medium hover:opacity-90 transition shadow-md disabled:opacity-60 flex items-center gap-2"
                 >
                   {submitting && <Loader2 size={16} className="animate-spin" />}
                   Submit Application
                 </button>
               )}
               {submitError && (
-                <p className="text-red-500 text-xs mt-2 text-center">{submitError}</p>
+                <p className="text-vxr-danger text-xs mt-2 text-center">{submitError}</p>
               )}
             </div>
           </div>
@@ -655,7 +595,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
             <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md mx-auto p-6 animate-fade-in-up">
               <div className="text-center">
                 <div className="w-14 h-14 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <AlertCircle size={28} className="text-[#e8756a]" />
+                  <AlertCircle size={28} className="text-vxr-accent" />
                 </div>
                 <h3 className="text-xl font-bold text-gray-800 mb-2">Are you sure?</h3>
                 <p className="text-gray-500 mb-6">Are you sure you want to submit this application?</p>
@@ -669,7 +609,7 @@ export default function ApplicationModal({ isOpen, onClose, unitTitle, unitPrice
                   <button
                     onClick={handleConfirmSubmit}
                     disabled={submitting}
-                    className="flex-1 px-4 py-2 bg-gradient-to-r from-[#e8756a] to-[#f0a090] text-white rounded-lg font-medium hover:opacity-90 transition disabled:opacity-60 flex items-center justify-center gap-2"
+                    className="flex-1 px-4 py-2 bg-gradient-to-r bg-vxr-gradient text-white rounded-lg font-medium hover:opacity-90 transition disabled:opacity-60 flex items-center justify-center gap-2"
                   >
                     {submitting && <Loader2 size={14} className="animate-spin" />}
                     Yes, Submit

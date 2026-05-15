@@ -17,7 +17,7 @@ import {
 const ROLE_OPTIONS = ["tenant", "landlord", "admin"];
 const LISTING_STATUS_OPTIONS = ["active", "draft", "inactive"];
 
-function StatCard({ icon: Icon, label, value, hint, color = "#EC6138" }) {
+function StatCard({ icon: Icon, label, value, hint, color = "#FF7043" }) {
   return (
     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
       <div className="flex items-center justify-between">
@@ -128,7 +128,7 @@ function UsersTab() {
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && load()}
               placeholder="Search email or name…"
-              className="w-full h-10 pl-9 pr-3 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-[#EC6138]"
+              className="w-full h-10 pl-9 pr-3 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-vxr-accent"
             />
           </div>
           <select
@@ -281,7 +281,7 @@ function ListingsTab() {
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && load()}
             placeholder="Search title…"
-            className="w-full h-10 pl-9 pr-3 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-[#EC6138]"
+            className="w-full h-10 pl-9 pr-3 text-sm bg-white border border-slate-200 rounded-lg outline-none focus:border-vxr-accent"
           />
         </div>
         <select
@@ -499,7 +499,7 @@ export default function AdminDashboard() {
         actions={
           <button
             onClick={() => navigate("/admin/cms")}
-            className="hidden sm:inline-flex items-center gap-1.5 h-10 px-3.5 rounded-lg bg-[#EC6138] text-white text-sm font-semibold hover:opacity-90"
+            className="hidden sm:inline-flex items-center gap-1.5 h-10 px-3.5 rounded-lg bg-vxr-accent text-white text-sm font-semibold hover:opacity-90"
           >
             <FileText size={14} /> Open CMS
           </button>
@@ -520,7 +520,7 @@ export default function AdminDashboard() {
                 <StatCard icon={Users} label="Total users" value={loadingStats ? "…" : stats?.users}
                           color="#6366F1" />
                 <StatCard icon={Building2} label="Listings" value={loadingStats ? "…" : stats?.listings}
-                          hint={stats ? `${stats.activeListings} active` : ""} color="#EC6138" />
+                          hint={stats ? `${stats.activeListings} active` : ""} color="#FF7043" />
                 <StatCard icon={ClipboardList} label="Applications" value={loadingStats ? "…" : stats?.applications}
                           hint={stats ? `${stats.pendingApplications} pending` : ""} color="#F59E0B" />
                 <StatCard icon={FileSignature} label="Contracts" value={loadingStats ? "…" : stats?.contracts}
@@ -534,41 +534,41 @@ export default function AdminDashboard() {
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => setTab("users")}
-                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-[#EC6138] hover:bg-orange-50/40 transition"
+                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-vxr-accent hover:bg-orange-50/40 transition"
                     >
-                      <Users size={16} className="text-[#EC6138]" />
+                      <Users size={16} className="text-vxr-accent" />
                       <p className="text-sm font-semibold text-slate-900 mt-2">Manage users</p>
                       <p className="text-xs text-slate-500">Roles & verification</p>
                     </button>
                     <button
                       onClick={() => setTab("listings")}
-                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-[#EC6138] hover:bg-orange-50/40 transition"
+                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-vxr-accent hover:bg-orange-50/40 transition"
                     >
-                      <Building2 size={16} className="text-[#EC6138]" />
+                      <Building2 size={16} className="text-vxr-accent" />
                       <p className="text-sm font-semibold text-slate-900 mt-2">Manage listings</p>
                       <p className="text-xs text-slate-500">Approve / hide / verify</p>
                     </button>
                     <button
                       onClick={() => setTab("applications")}
-                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-[#EC6138] hover:bg-orange-50/40 transition"
+                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-vxr-accent hover:bg-orange-50/40 transition"
                     >
-                      <ClipboardList size={16} className="text-[#EC6138]" />
+                      <ClipboardList size={16} className="text-vxr-accent" />
                       <p className="text-sm font-semibold text-slate-900 mt-2">Review applications</p>
                       <p className="text-xs text-slate-500">Tenant submissions</p>
                     </button>
                     <button
                       onClick={() => navigate("/admin/cms")}
-                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-[#EC6138] hover:bg-orange-50/40 transition"
+                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-vxr-accent hover:bg-orange-50/40 transition"
                     >
-                      <FileText size={16} className="text-[#EC6138]" />
+                      <FileText size={16} className="text-vxr-accent" />
                       <p className="text-sm font-semibold text-slate-900 mt-2">Content (CMS)</p>
                       <p className="text-xs text-slate-500">Pages, banners, FAQs</p>
                     </button>
                     <button
                       onClick={() => setTab("verifications")}
-                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-[#EC6138] hover:bg-orange-50/40 transition col-span-2"
+                      className="text-left p-3 rounded-lg border border-slate-200 hover:border-vxr-accent hover:bg-orange-50/40 transition col-span-2"
                     >
-                      <ShieldCheck size={16} className="text-[#EC6138]" />
+                      <ShieldCheck size={16} className="text-vxr-accent" />
                       <p className="text-sm font-semibold text-slate-900 mt-2">Review verifications</p>
                       <p className="text-xs text-slate-500">Approve user IDs &amp; listing documents</p>
                     </button>
@@ -594,7 +594,7 @@ export default function AdminDashboard() {
                     <li className="flex items-center justify-between pt-2 border-t border-slate-100">
                       <button
                         onClick={loadStats}
-                        className="inline-flex items-center gap-1.5 text-sm font-medium text-[#EC6138] hover:underline"
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-vxr-accent hover:underline"
                       >
                         <RefreshCw size={13} /> Refresh stats
                       </button>

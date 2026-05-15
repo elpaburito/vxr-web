@@ -3,10 +3,12 @@ import {
   LayoutDashboard, FileText, LogOut, Home, ShieldCheck,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
+import { Sidebar, Avatar } from "./vxr";
+import NotificationBell from "./NotificationBell.jsx";
 
-const NAV = [
-  { label: "Dashboard",        path: "/admin",     icon: LayoutDashboard },
-  { label: "Content Management", path: "/admin/cms", icon: FileText },
+const NAV_ITEMS = [
+  { id: "dashboard", label: "Dashboard", path: "/admin", icon: LayoutDashboard },
+  { id: "cms", label: "Content Management", path: "/admin/cms", icon: FileText },
 ];
 
 export default function AdminLayout({ children, title, subtitle, actions }) {
@@ -14,105 +16,92 @@ export default function AdminLayout({ children, title, subtitle, actions }) {
   const location = useLocation();
   const { profile, user, signOut } = useAuth();
 
-  const initials =
-    (profile?.full_name || user?.email || "A")
-      .split(" ")
-      .map((s) => s[0])
-      .slice(0, 2)
-      .join("")
-      .toUpperCase();
+  const activeId =
+    location.pathname === "/admin"
+      ? "dashboard"
+      : location.pathname.startsWith("/admin/cms")
+        ? "cms"
+        : null;
 
   const handleLogout = async () => {
-    try { await signOut(); } catch { /* ignored */ }
+    try {
+      await signOut();
+    } catch {
+      /* ignored */
+    }
     navigate("/");
   };
 
+  const sidebarUser = profile?.full_name
+    ? { name: profile.full_name, email: user?.email || "" }
+    : user?.email
+      ? { name: user.email.split("@")[0], email: user.email }
+      : null;
+
   return (
-    <div className="min-h-screen flex bg-slate-50 font-sans">
-      {/* Sidebar */}
-      <aside className="hidden md:flex w-64 flex-col bg-slate-900 text-slate-100">
-        <div
-          onClick={() => navigate("/admin")}
-          className="flex items-center gap-2 px-5 py-5 cursor-pointer border-b border-white/10"
-        >
-          <div className="w-9 h-9 rounded-lg bg-[#EC6138] flex items-center justify-center text-white font-bold">V</div>
-          <div>
-            <p className="font-semibold tracking-tight">ViewxRent</p>
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">Admin Console</p>
-          </div>
-        </div>
+    <div className="min-h-screen flex bg-vxr-bg">
+      <Sidebar
+        items={NAV_ITEMS.map((n) => ({ id: n.id, label: n.label, icon: n.icon }))}
+        active={activeId}
+        onNav={(id) => {
+          const target = NAV_ITEMS.find((n) => n.id === id);
+          if (target) navigate(target.path);
+        }}
+        user={sidebarUser}
+      />
 
-        <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV.map(({ label, path, icon: Icon }) => {
-            const active =
-              path === "/admin"
-                ? location.pathname === "/admin"
-                : location.pathname.startsWith(path);
-            return (
-              <button
-                key={path}
-                onClick={() => navigate(path)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition ${
-                  active
-                    ? "bg-[#EC6138] text-white shadow-md shadow-orange-900/30"
-                    : "text-slate-300 hover:bg-white/5"
-                }`}
-              >
-                <Icon size={16} />
-                {label}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="px-3 py-3 border-t border-white/10 space-y-1">
-          <button
-            onClick={() => navigate("/home2")}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-slate-300 hover:bg-white/5"
-          >
-            <Home size={16} />
-            Back to site
-          </button>
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-red-300 hover:bg-red-500/10"
-          >
-            <LogOut size={16} />
-            Sign out
-          </button>
-        </div>
-      </aside>
-
-      {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="sticky top-0 z-10 bg-white border-b border-slate-200">
+        <header
+          className="sticky top-0 z-10 backdrop-blur-xl border-b border-vxr-border"
+          style={{ background: "rgba(247,245,243,0.85)" }}
+        >
           <div className="flex items-center justify-between px-6 py-4">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <ShieldCheck size={13} className="text-[#EC6138]" />
+              <div className="flex items-center gap-2 font-body text-xs text-vxr-text-sub">
+                <ShieldCheck size={13} className="text-vxr-accent" />
                 <span className="uppercase tracking-wider font-semibold">Admin</span>
               </div>
-              <h1 className="text-xl md:text-2xl font-bold text-slate-900 mt-0.5 truncate">
+              <h1 className="font-display text-xl md:text-2xl font-extrabold text-vxr-text mt-0.5 truncate tracking-tight">
                 {title}
               </h1>
               {subtitle && (
-                <p className="text-sm text-slate-500 mt-0.5 truncate">{subtitle}</p>
+                <p className="font-body text-sm text-vxr-text-sub mt-0.5 truncate">
+                  {subtitle}
+                </p>
               )}
             </div>
 
             <div className="flex items-center gap-3">
               {actions}
-              <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-slate-200">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white flex items-center justify-center text-sm font-semibold">
-                  {initials}
-                </div>
+              <NotificationBell framed />
+              <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-vxr-border">
+                <Avatar
+                  name={profile?.full_name || user?.email || "A"}
+                  src={profile?.avatar_url}
+                  gradient
+                  size={36}
+                />
                 <div className="leading-tight">
-                  <p className="text-sm font-semibold text-slate-900">
+                  <p className="font-display text-sm font-bold text-vxr-text">
                     {profile?.full_name || user?.email?.split("@")[0]}
                   </p>
-                  <p className="text-[11px] text-slate-500">Administrator</p>
+                  <p className="font-body text-[11px] text-vxr-text-sub">Administrator</p>
                 </div>
               </div>
+              <button
+                onClick={() => navigate("/home2")}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 font-body text-xs font-semibold text-vxr-text-sub hover:text-vxr-text rounded-vxr-md hover:bg-vxr-surface2 transition-colors"
+                title="Back to site"
+              >
+                <Home size={14} /> Site
+              </button>
+              <button
+                onClick={handleLogout}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 font-body text-xs font-semibold text-vxr-danger hover:bg-vxr-danger-soft rounded-vxr-md transition-colors"
+                title="Sign out"
+              >
+                <LogOut size={14} /> Sign out
+              </button>
             </div>
           </div>
         </header>

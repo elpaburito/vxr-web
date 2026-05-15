@@ -1,43 +1,44 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  Home, Bell, ArrowLeft, Lock, CreditCard, ShieldCheck,
+  Home, Lock, CreditCard, ShieldCheck,
   Check, AlertCircle, Loader2, FileText,
 } from "lucide-react";
-import {
-  Elements, PaymentElement, useStripe, useElements,
-} from "@stripe/react-stripe-js";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import AppHeader from "./components/AppHeader.jsx";
+import { PaymentMethodIcon } from "./components/vxr";
 import { useAuth } from "./context/AuthContext.jsx";
 import {
   fetchContractById, getContractStatus, CONTRACT_TYPES,
   normalizeContract, updateContract,
 } from "./lib/contractsService";
 import {
-  createStripePaymentIntent, recordStripePayment,
+  createPaymongoPaymentIntent, attachPaymentMethod, recordPaymongoPayment,
+  recordMockPayment,
 } from "./lib/paymentsService";
-import { getStripePromise, isStripeConfigured } from "./lib/stripe";
+import {
+  createCardPaymentMethod, createEwalletPaymentMethod,
+  isPaymongoConfigured, METHOD_LABELS,
+} from "./lib/paymongo";
+import {
+  listMyPaymentMethods, addPaymentMethod,
+} from "./lib/paymentMethodsService";
 
-// Stripe.js loader is module-scoped: loadStripe() must be called once
-// per page load. getStripePromise memoizes it for us.
-const stripePromise = getStripePromise();
+const EWALLET_TYPES = ["gcash", "paymaya", "grab_pay"];
 
 export default function ContractPayment() {
   const navigate = useNavigate();
   const { id } = useParams();
   const [searchParams] = useSearchParams();
-  const { user, profile, isAuthenticated } = useAuth();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const { user } = useAuth();
 
   const [contract, setContract] = useState(null);
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState("form"); // 'form' | 'processing' | 'success'
-  const [intent, setIntent] = useState(null);   // { clientSecret, paymentIntentId, amount }
+  const [intent, setIntent] = useState(null);
   const [intentError, setIntentError] = useState(null);
+  const [savedMethods, setSavedMethods] = useState([]);
 
-  const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
-
-  // ─── Load contract + self-heal zero amounts ────────────────────────────────
+  // ─── Load contract + self-heal zero amounts ─────────────────────────────
   useEffect(() => {
     if (!id) return;
     setLoading(true);
@@ -68,22 +69,28 @@ export default function ContractPayment() {
     });
   }, [id]);
 
+  // ─── Load saved methods for the picker ───────────────────────────────────
+  useEffect(() => {
+    if (!user?.id) return;
+    listMyPaymentMethods().then(({ data }) => setSavedMethods(data ?? []));
+  }, [user?.id]);
+
   const status = getContractStatus(contract);
   const total = useMemo(() => {
     if (!contract) return 0;
     return Number(contract.monthlyRent) + Number(contract.securityDeposit) + Number(contract.advanceRent);
   }, [contract]);
 
-  // ─── Ask the Edge Function for a PaymentIntent once we know who's paying ──
   const isTenant = !!(user?.id && contract?.tenantId && user.id === contract.tenantId);
   const eligibleForCheckout =
     !!contract && isTenant && total > 0 && status !== "paid" && step !== "success";
 
+  // ─── Ask the Edge Function for a PaymentIntent once we know who's paying ─
   useEffect(() => {
     if (!eligibleForCheckout) return;
     let cancelled = false;
     setIntentError(null);
-    createStripePaymentIntent(id).then((res) => {
+    createPaymongoPaymentIntent(id).then((res) => {
       if (cancelled) return;
       if (res?.error) { setIntentError(res.error); return; }
       setIntent(res);
@@ -91,28 +98,25 @@ export default function ContractPayment() {
     return () => { cancelled = true; };
   }, [id, eligibleForCheckout]);
 
-  // ─── Handle the redirect-back case (3DS / authorize-and-redirect) ─────────
-  // Stripe appends ?payment_intent=…&payment_intent_client_secret=…&redirect_status=…
+  // ─── Redirect-back from PayMongo e-wallet / 3DS ──────────────────────────
+  // PayMongo appends ?payment_intent_id=... to the return_url after the
+  // user authorizes on the simulator (sandbox) or the real wallet
+  // (production).
   useEffect(() => {
-    const piParam = searchParams.get("payment_intent");
-    const redirectStatus = searchParams.get("redirect_status");
+    const piParam = searchParams.get("payment_intent_id");
     if (!piParam || !contract) return;
-    if (redirectStatus === "succeeded") {
-      setStep("processing");
-      recordStripePayment(id, piParam).then((res) => {
-        if (res?.error) { setIntentError(res.error); setStep("form"); return; }
-        setContract((prev) => prev && {
-          ...prev,
-          payment: { transactionId: piParam, amount: total, paidAt: new Date().toISOString() },
-        });
-        setStep("success");
+    setStep("processing");
+    recordPaymongoPayment(id, piParam).then((res) => {
+      if (res?.error) { setIntentError(res.error); setStep("form"); return; }
+      setContract((prev) => prev && {
+        ...prev,
+        payment: { transactionId: piParam, amount: total, paidAt: new Date().toISOString() },
       });
-    } else if (redirectStatus === "failed") {
-      setIntentError("Payment was not completed. Please try again.");
-    }
+      setStep("success");
+    });
   }, [searchParams, contract, id, total]);
 
-  // ─── Loading / guard rails ────────────────────────────────────────────────
+  // ─── Guard rails ─────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="w-full min-h-screen bg-[#F7F8FA] flex items-center justify-center text-gray-500">
@@ -155,27 +159,19 @@ export default function ContractPayment() {
     );
   }
 
-  if (!isStripeConfigured() && step !== "success") {
+  if (!isPaymongoConfigured() && step !== "success") {
     return (
       <NotFound
         onBack={() => navigate(`/contract/${id}`)}
         title="Payments are not configured"
-        message="VITE_STRIPE_PUBLISHABLE_KEY isn't set in this build. Add your Stripe publishable test key and redeploy."
+        message="VITE_PAYMONGO_PUBLIC_KEY isn't set in this build. Add your PayMongo publishable test key and redeploy."
       />
     );
   }
 
-  // ─── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="w-full min-h-screen bg-[#F7F8FA] flex flex-col">
-      <Header
-        navigate={navigate}
-        dropdownOpen={dropdownOpen}
-        setDropdownOpen={setDropdownOpen}
-        initial={initial}
-        isAuthenticated={isAuthenticated}
-        onBack={() => navigate(`/contract/${id}`)}
-      />
+    <div className="w-full min-h-screen bg-vxr-bg flex flex-col">
+      <AppHeader showBack onBack={() => navigate(`/contract/${id}`)} />
 
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 lg:px-6 py-8">
         {step === "success" ? (
@@ -214,34 +210,34 @@ export default function ContractPayment() {
                 </div>
               )}
 
-              {step === "form" && intent?.clientSecret && (
-                <Elements
-                  stripe={stripePromise}
-                  options={{
-                    clientSecret: intent.clientSecret,
-                    appearance: { theme: "stripe", variables: { colorPrimary: "#635BFF" } },
+              {step === "form" && intent?.paymentIntentId && (
+                <CheckoutForm
+                  contractId={id}
+                  paymentIntentId={intent.paymentIntentId}
+                  total={total}
+                  savedMethods={savedMethods}
+                  onSavedMethodsChange={setSavedMethods}
+                  returnUrl={`${window.location.origin}/contract/${id}/pay`}
+                  onProcessing={() => setStep("processing")}
+                  onError={(msg) => { setIntentError(msg); setStep("form"); }}
+                  onSuccess={(piId) => {
+                    setContract((prev) => prev && {
+                      ...prev,
+                      payment: {
+                        transactionId: piId,
+                        amount: total,
+                        paidAt: new Date().toISOString(),
+                      },
+                    });
+                    setStep("success");
                   }}
-                >
-                  <CheckoutForm
-                    contractId={id}
-                    paymentIntentId={intent.paymentIntentId}
-                    total={total}
-                    returnUrl={`${window.location.origin}/contract/${id}/pay`}
-                    onProcessing={() => setStep("processing")}
-                    onError={(msg) => { setIntentError(msg); setStep("form"); }}
-                    onSuccess={(piId) => {
-                      setContract((prev) => prev && {
-                        ...prev,
-                        payment: {
-                          transactionId: piId,
-                          amount: total,
-                          paidAt: new Date().toISOString(),
-                        },
-                      });
-                      setStep("success");
-                    }}
-                  />
-                </Elements>
+                />
+              )}
+
+              {step === "form" && intentError && intent && (
+                <div className="mt-4">
+                  <ErrorBlock message={intentError} />
+                </div>
               )}
             </section>
 
@@ -255,79 +251,227 @@ export default function ContractPayment() {
   );
 }
 
-// ─── Stripe Elements form ─────────────────────────────────────────────────────
+// ─── Checkout form with method picker ────────────────────────────────────────
 
-function CheckoutForm({ contractId, paymentIntentId, total, returnUrl, onProcessing, onError, onSuccess }) {
-  const stripe = useStripe();
-  const elements = useElements();
+function CheckoutForm({
+  contractId, paymentIntentId, total, savedMethods, onSavedMethodsChange,
+  returnUrl, onProcessing, onError, onSuccess,
+}) {
+  // Selected option in the picker.
+  //   { kind: 'saved',  id: <payment_methods.id> }
+  //   { kind: 'new',    type: 'card'|'gcash'|... }
+  const initial = savedMethods.find((m) => m.is_default)
+    ? { kind: "saved", id: savedMethods.find((m) => m.is_default).id }
+    : savedMethods[0]
+      ? { kind: "saved", id: savedMethods[0].id }
+      : { kind: "new", type: "card" };
+  const [picked, setPicked] = useState(initial);
+
+  // Re-pick when the saved list changes (e.g. user saved one).
+  useEffect(() => {
+    setPicked((prev) => {
+      if (prev.kind === "saved" && !savedMethods.find((m) => m.id === prev.id)) {
+        const def = savedMethods.find((m) => m.is_default) ?? savedMethods[0];
+        return def ? { kind: "saved", id: def.id } : { kind: "new", type: "card" };
+      }
+      return prev;
+    });
+  }, [savedMethods]);
+
+  const [card, setCard] = useState({ number: "", expMonth: "", expYear: "", cvc: "" });
+  const [billingName, setBillingName] = useState("");
+  const [billingEmail, setBillingEmail] = useState("");
+  const [billingPhone, setBillingPhone] = useState("");
+
+  // Pre-fill billing name from the picked saved method whenever it
+  // changes. User can still override the field.
+  useEffect(() => {
+    if (picked.kind !== "saved") return;
+    const m = savedMethods.find((x) => x.id === picked.id);
+    if (m?.billing_name) setBillingName(m.billing_name);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked, savedMethods]);
+  const [saveNewEwallet, setSaveNewEwallet] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState(null);
 
+  const pickedSaved = picked.kind === "saved"
+    ? savedMethods.find((m) => m.id === picked.id)
+    : null;
+  const newType = picked.kind === "new" ? picked.type : null;
+
   const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
-    if (!stripe || !elements) return;
-    setSubmitting(true);
     setLocalError(null);
-    // NOTE: do NOT flip the parent to "processing" here. That would
-    // unmount <Elements> (and the PaymentElement inside it) on the next
-    // render, and the elements.submit() / confirmPayment() calls below
-    // would then throw "elements should have a mounted Payment Element".
-    // The button's own spinner covers the in-flight UX; only flip the
-    // parent step once Stripe is done and we're hitting our backend.
 
-    // Validate Elements input first so we can render granular field
-    // errors before kicking off the network call.
-    const submitRes = await elements.submit();
-    if (submitRes?.error) {
-      const msg = submitRes.error.message ?? "Please check your card details.";
-      setLocalError(msg);
-      onError?.(msg);
-      setSubmitting(false);
+    // Mock methods bypass billing requirements and the entire PayMongo
+    // flow — they're for demos / screenshots where you want one-click
+    // payment with no external authorization.
+    if (picked.kind === "saved" && pickedSaved?.is_mock) {
+      setSubmitting(true);
+      try {
+        onProcessing?.();
+        const res = await recordMockPayment({
+          contractId,
+          paymentMethodRecordId: pickedSaved.id,
+        });
+        if (res?.error) throw new Error(res.error);
+        onSuccess?.(res?.paymentIntentId ?? `pi_mock_${pickedSaved.id}`);
+      } catch (err) {
+        const msg = err?.message ?? String(err);
+        setLocalError(msg);
+        onError?.(msg);
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
 
-    const { error, paymentIntent } = await stripe.confirmPayment({
-      elements,
-      confirmParams: { return_url: returnUrl },
-      redirect: "if_required",
-    });
-
-    if (error) {
-      const msg = error.message ?? "Payment failed.";
-      setLocalError(msg);
-      onError?.(msg);
-      setSubmitting(false);
+    if (!billingName.trim()) {
+      setLocalError("Billing name is required.");
       return;
     }
+    const billing = {
+      name:  billingName.trim(),
+      email: billingEmail.trim() || undefined,
+      phone: billingPhone.trim() || undefined,
+    };
 
-    // Stripe is done — safe to unmount the form now and show the
-    // processing UI while we record the payment server-side.
-    onProcessing?.();
-    const piId = paymentIntent?.id ?? paymentIntentId;
-    const rec = await recordStripePayment(contractId, piId);
-    if (rec?.error) {
-      const msg = `Payment confirmed but recording failed: ${rec.error}`;
+    setSubmitting(true);
+
+    try {
+      let paymentMethodId;
+      let paymentMethodRecordId = null;
+
+      if (picked.kind === "saved") {
+        if (!pickedSaved) throw new Error("Selected payment method is no longer available.");
+        const pm = await createEwalletPaymentMethod({ type: pickedSaved.type, billing });
+        paymentMethodId = pm.id;
+        paymentMethodRecordId = pickedSaved.id;
+      } else if (newType === "card") {
+        if (!card.number || !card.expMonth || !card.expYear || !card.cvc) {
+          throw new Error("Card details are required.");
+        }
+        const pm = await createCardPaymentMethod({ card, billing });
+        paymentMethodId = pm.id;
+      } else if (EWALLET_TYPES.includes(newType) || newType === "bank_transfer") {
+        const pm = await createEwalletPaymentMethod({ type: newType, billing });
+        paymentMethodId = pm.id;
+
+        if (saveNewEwallet) {
+          const label = METHOD_LABELS[newType]?.label ?? newType;
+          const saved = await addPaymentMethod({
+            type: newType,
+            label,
+            billing_name: billing.name,
+          });
+          if (!saved.error && saved.data?.method) {
+            paymentMethodRecordId = saved.data.method.id;
+            onSavedMethodsChange((prev) => [saved.data.method, ...prev]);
+          }
+        }
+      } else {
+        throw new Error("Pick a payment method to continue.");
+      }
+
+      const attachRes = await attachPaymentMethod({
+        paymentIntentId,
+        paymentMethodId,
+        returnUrl,
+        paymentMethodRecordId,
+      });
+      if (attachRes?.error) throw new Error(attachRes.error);
+
+      const piStatus = attachRes.status;
+      const redirectUrl = attachRes.next_action?.redirect?.url;
+
+      if (piStatus === "succeeded") {
+        onProcessing?.();
+        const rec = await recordPaymongoPayment(contractId, paymentIntentId);
+        if (rec?.error) throw new Error(`Payment confirmed but recording failed: ${rec.error}`);
+        onSuccess?.(paymentIntentId);
+        return;
+      }
+
+      if (redirectUrl) {
+        // Redirect to PayMongo simulator / real wallet. The return URL
+        // handler in the parent component will pick it back up via
+        // ?payment_intent_id=.
+        window.location.href = redirectUrl;
+        return;
+      }
+
+      if (piStatus === "processing" || piStatus === "awaiting_next_action") {
+        // No redirect URL was provided but PayMongo isn't done yet.
+        // Surface a clear message — likely a sandbox quirk.
+        throw new Error("Payment is processing. Refresh in a moment to see the result.");
+      }
+
+      throw new Error(`Unexpected payment status: ${piStatus}`);
+    } catch (err) {
+      const msg = err?.message ?? String(err);
       setLocalError(msg);
       onError?.(msg);
+    } finally {
       setSubmitting(false);
-      return;
     }
-
-    setSubmitting(false);
-    onSuccess?.(piId);
-  }, [stripe, elements, contractId, paymentIntentId, returnUrl, onProcessing, onError, onSuccess]);
+  }, [
+    billingName, billingEmail, billingPhone, picked, pickedSaved, newType,
+    card, paymentIntentId, contractId, returnUrl, saveNewEwallet,
+    onProcessing, onSuccess, onError, onSavedMethodsChange,
+  ]);
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
-      <PaymentElement options={{ layout: "tabs" }} />
+    <form onSubmit={handleSubmit} className="space-y-6">
+      <MethodPicker
+        savedMethods={savedMethods}
+        picked={picked}
+        onPick={setPicked}
+      />
+
+      {picked.kind === "saved" && pickedSaved && (
+        <SavedMethodDetail method={pickedSaved} />
+      )}
+
+      {picked.kind === "new" && newType === "card" && (
+        <CardForm card={card} setCard={setCard} />
+      )}
+
+      {picked.kind === "new" && EWALLET_TYPES.includes(newType) && (
+        <EwalletNote type={newType} />
+      )}
+
+      {picked.kind === "new" && newType === "bank_transfer" && (
+        <BankTransferNote />
+      )}
+
+      {!(picked.kind === "saved" && pickedSaved?.is_mock) && (
+        <BillingFields
+          name={billingName}    setName={setBillingName}
+          email={billingEmail}  setEmail={setBillingEmail}
+          phone={billingPhone}  setPhone={setBillingPhone}
+        />
+      )}
+
+      {picked.kind === "new" && newType && newType !== "card" && (
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={saveNewEwallet}
+            onChange={(e) => setSaveNewEwallet(e.target.checked)}
+            className="w-4 h-4 accent-[#FF7043]"
+          />
+          Save this {METHOD_LABELS[newType]?.short ?? newType} as a payment method
+        </label>
+      )}
 
       {localError && <ErrorBlock message={localError} />}
 
       <button
         type="submit"
-        disabled={!stripe || submitting}
+        disabled={submitting}
         className="w-full h-12 rounded-lg text-white font-semibold transition hover:opacity-90 hover:shadow-lg flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
-        style={{ background: "linear-gradient(135deg, #635BFF, #5046E5)" }}
+        style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
       >
         {submitting
           ? <><Loader2 size={14} className="animate-spin" /> Processing…</>
@@ -340,15 +484,220 @@ function CheckoutForm({ contractId, paymentIntentId, total, returnUrl, onProcess
           256-bit SSL
         </span>
         <span>·</span>
-        <span>Powered by <span className="font-semibold text-slate-500">Stripe</span></span>
+        <span>Powered by <span className="font-semibold text-slate-500">PayMongo</span></span>
         <span>·</span>
-        <span>PCI DSS</span>
+        <span>Sandbox test mode</span>
       </div>
     </form>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Pickers & forms ─────────────────────────────────────────────────────────
+
+function MethodPicker({ savedMethods, picked, onPick }) {
+  return (
+    <div className="space-y-3">
+      {savedMethods.length > 0 && (
+        <div className="space-y-2">
+          <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Saved methods
+          </label>
+          <div className="space-y-2">
+            {savedMethods.map((m) => (
+              <PickRow
+                key={m.id}
+                selected={picked.kind === "saved" && picked.id === m.id}
+                onClick={() => onPick({ kind: "saved", id: m.id })}
+              >
+                <MethodIcon type={m.type} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-slate-900 truncate">
+                    {m.label || METHOD_LABELS[m.type]?.label || m.type}
+                    {m.is_default && (
+                      <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+                        Default
+                      </span>
+                    )}
+                    {m.is_mock && (
+                      <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wide text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">
+                        Mock
+                      </span>
+                    )}
+                  </div>
+                  {m.account_hint && (
+                    <div className="text-xs text-slate-500 truncate">{m.account_hint}</div>
+                  )}
+                </div>
+              </PickRow>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          {savedMethods.length > 0 ? "Or pay with a new method" : "Choose a payment method"}
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {["card", "gcash", "paymaya", "grab_pay", "bank_transfer"].map((t) => (
+            <PickRow
+              key={t}
+              compact
+              selected={picked.kind === "new" && picked.type === t}
+              onClick={() => onPick({ kind: "new", type: t })}
+            >
+              <MethodIcon type={t} />
+              <span className="text-sm font-medium text-slate-700">
+                {METHOD_LABELS[t]?.label ?? t}
+              </span>
+            </PickRow>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PickRow({ children, selected, onClick, compact }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 ${compact ? "px-3 py-2.5" : "px-4 py-3"} rounded-lg border text-left transition ${
+        selected
+          ? "border-[#FF7043] bg-[#FFF3E0]"
+          : "border-slate-200 bg-white hover:border-slate-300"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MethodIcon({ type }) {
+  return <PaymentMethodIcon type={type} size="sm" className="flex-shrink-0" />;
+}
+
+function SavedMethodDetail({ method }) {
+  if (method.is_mock) {
+    return (
+      <div className="rounded-lg border border-purple-200 bg-purple-50 px-4 py-3 text-sm text-purple-900">
+        <span className="font-semibold">Demo mode</span> — payment will complete instantly
+        without contacting PayMongo. For testing and screenshots only.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+      You'll be redirected to {METHOD_LABELS[method.type]?.label ?? method.type}
+      {" "}to authorize this payment.
+    </div>
+  );
+}
+
+function CardForm({ card, setCard }) {
+  const setField = (k) => (e) => setCard((prev) => ({ ...prev, [k]: e.target.value }));
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1">Card number</label>
+        <input
+          inputMode="numeric"
+          placeholder="4343 4343 4343 4345"
+          value={card.number}
+          onChange={setField("number")}
+          className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Exp month</label>
+          <input
+            inputMode="numeric"
+            placeholder="12"
+            value={card.expMonth}
+            onChange={setField("expMonth")}
+            className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Exp year</label>
+          <input
+            inputMode="numeric"
+            placeholder="2030"
+            value={card.expYear}
+            onChange={setField("expYear")}
+            className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">CVC</label>
+          <input
+            inputMode="numeric"
+            placeholder="123"
+            value={card.cvc}
+            onChange={setField("cvc")}
+            className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
+          />
+        </div>
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Test cards: <span className="font-mono">4343 4343 4343 4345</span> (success),
+        {" "}<span className="font-mono">4571 7360 0000 0014</span> (decline).
+      </p>
+    </div>
+  );
+}
+
+function EwalletNote({ type }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+      You'll be redirected to the {METHOD_LABELS[type]?.label ?? type} authorize page.
+      In sandbox, click <span className="font-semibold">"Authorize Test Payment"</span> to complete.
+    </div>
+  );
+}
+
+function BankTransferNote() {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+      After clicking Pay, PayMongo will route you to your online banking
+      to authorize the transfer.
+    </div>
+  );
+}
+
+function BillingFields({ name, setName, email, setEmail, phone, setPhone }) {
+  return (
+    <div className="space-y-3">
+      <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+        Billing details
+      </label>
+      <input
+        placeholder="Full name *"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
+      />
+      <div className="grid grid-cols-2 gap-3">
+        <input
+          placeholder="Email (optional)"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
+        />
+        <input
+          placeholder="Phone (optional)"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
+        />
+      </div>
+    </div>
+  );
+}
+
+// ─── Sub-components ──────────────────────────────────────────────────────────
 
 function ErrorBlock({ message }) {
   return (
@@ -371,7 +720,7 @@ function OrderSummary({ contract, total }) {
           {contract.propertyType} · {contract.propertyAddress}
         </div>
         <div className="text-xs text-slate-500 mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full"
-          style={{ background: `${meta?.accent ?? "#635BFF"}20`, color: meta?.accent ?? "#635BFF" }}>
+          style={{ background: `${meta?.accent ?? "#FF7043"}20`, color: meta?.accent ?? "#FF7043" }}>
           <FileText size={11} />
           {meta?.label ?? "Contract"}
         </div>
@@ -402,7 +751,7 @@ function OrderSummary({ contract, total }) {
         </div>
         <div className="flex items-start gap-2">
           <Check size={11} className="text-emerald-500 mt-0.5 flex-shrink-0" />
-          <span>Funds processed by Stripe — your card is never stored on our servers.</span>
+          <span>Funds processed by PayMongo — your card and wallet details are never stored on our servers.</span>
         </div>
         <div className="flex items-start gap-2">
           <Check size={11} className="text-emerald-500 mt-0.5 flex-shrink-0" />
@@ -427,12 +776,12 @@ function ProcessingState() {
     <div className="py-16 flex flex-col items-center justify-center text-center">
       <div className="relative">
         <div className="w-16 h-16 rounded-full border-4 border-slate-200" />
-        <Loader2 className="absolute inset-0 m-auto w-16 h-16 text-[#635BFF] animate-spin" strokeWidth={1.5} />
+        <Loader2 className="absolute inset-0 m-auto w-16 h-16 text-[#FF7043] animate-spin" strokeWidth={1.5} />
       </div>
       <h3 className="text-base font-bold text-slate-900 mt-5">Processing your payment</h3>
       <p className="text-sm text-slate-500 mt-1">Please don't close this window…</p>
       <div className="mt-6 flex items-center gap-2 text-[11px] text-slate-400">
-        <Lock size={11} /> Encrypted by Stripe
+        <Lock size={11} /> Encrypted by PayMongo
       </div>
     </div>
   );
@@ -508,7 +857,7 @@ function SuccessView({ contract, total, onBack, onHome }) {
         <button
           onClick={onHome}
           className="h-11 rounded-lg text-white font-semibold transition hover:opacity-90 text-sm inline-flex items-center justify-center gap-2"
-          style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+          style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
         >
           <Home size={14} />
           Back to Home
@@ -530,87 +879,10 @@ function NotFound({ onBack, title, message }) {
       {message && <p className="text-sm text-slate-500 mt-1 max-w-sm">{message}</p>}
       <button
         onClick={onBack}
-        className="mt-4 px-4 py-2 bg-[#EC6138] text-white rounded-lg font-semibold text-sm hover:opacity-90 transition"
+        className="mt-4 px-4 py-2 bg-vxr-accent text-white rounded-lg font-semibold text-sm hover:opacity-90 transition"
       >
         Back
       </button>
     </div>
-  );
-}
-
-// ─── Header (unchanged from previous version) ────────────────────────────────
-
-function Header({ navigate, dropdownOpen, setDropdownOpen, initial, isAuthenticated, onBack }) {
-  return (
-    <nav
-      className="sticky top-0 z-50"
-      style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-      onClick={() => setDropdownOpen(false)}
-    >
-      <div
-        style={{ width: "100%", padding: "10px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <button
-            onClick={onBack}
-            style={{
-              background: "rgba(255,255,255,0.22)",
-              border: "none", cursor: "pointer",
-              width: 36, height: 36, borderRadius: 10,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}
-            aria-label="Back"
-          >
-            <ArrowLeft size={18} color="white" />
-          </button>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shadow-sm">
-              <span className="font-black text-lg" style={{ color: "#e8756a" }}>V</span>
-            </div>
-            <div className="flex flex-col">
-              <span className="font-bold text-white text-[15px] tracking-wide leading-none">
-                Payment
-              </span>
-              <span className="text-[10px] text-white/70 mt-0.5 font-medium">ViewxRent</span>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
-          <button onClick={() => navigate("/home2")} style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 4,
-          }}>
-            <Home size={22} color="white" />
-          </button>
-          <button style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 4, position: "relative",
-          }}>
-            <Bell size={22} color="white" />
-          </button>
-          {isAuthenticated && (
-            <button onClick={() => setDropdownOpen(!dropdownOpen)} style={{
-              display: "flex", alignItems: "center", gap: 8,
-              background: "white", border: "none", cursor: "pointer",
-              borderRadius: 999, padding: "5px 14px 5px 6px",
-              boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-            }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: "50%",
-                background: "linear-gradient(135deg, #EC6138, #FF8E9E)",
-                color: "white", fontWeight: 700,
-                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
-              }}>
-                {initial}
-              </div>
-              <div style={{ width: 0, height: 0, borderLeft: "6px solid transparent", borderRight: "6px solid transparent", borderTop: "8px solid #222" }} />
-            </button>
-          )}
-          {dropdownOpen && <ProfileDropdown />}
-        </div>
-      </div>
-    </nav>
   );
 }

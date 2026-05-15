@@ -1,175 +1,150 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  Home, Bell, ArrowLeft, Heart, Trash2, Loader2,
-} from "lucide-react";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import { Heart, Trash2, Loader2, Check } from "lucide-react";
 import { useWishlist } from "./context/WishlistContext.jsx";
 import PropertyCard from "./components/PropertyCard.jsx";
+import AppHeader from "./components/AppHeader.jsx";
+import { PageHero, Button, EmptyState } from "./components/vxr";
+import Footer from "./Footer.jsx";
 
 export default function Wishlist() {
   const navigate = useNavigate();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const { wishlist, loading, clearWishlist } = useWishlist();
+  const { wishlist, loading, removeFromWishlist } = useWishlist();
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
-  const handleLogout = () => {
-    setDropdownOpen(false);
-    navigate("/");
+  const enterSelectMode = () => {
+    setSelectMode(true);
+    setSelectedIds(new Set());
   };
 
-  const handleRemoveAll = async () => {
-    if (window.confirm('Are you sure you want to remove all items from your wishlist?')) {
-      await clearWishlist();
-    }
+  const cancelSelect = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const confirmRemove = async () => {
+    if (selectedIds.size === 0) return;
+    const ok = window.confirm(
+      `Remove ${selectedIds.size} item${selectedIds.size === 1 ? "" : "s"} from your wishlist?`
+    );
+    if (!ok) return;
+    await Promise.all([...selectedIds].map((id) => removeFromWishlist(id)));
+    setSelectMode(false);
+    setSelectedIds(new Set());
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <nav
-        className="sticky top-0 z-50"
-        style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-        onClick={() => setDropdownOpen(false)}
-      >
-        <div
-          style={{ width: "100%", padding: "10px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box" }}
-          onClick={e => e.stopPropagation()}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <button
-              onClick={() => navigate(-1)}
-              style={{
-                background: "none", border: "none", cursor: "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center", padding: 4
-              }}
-            >
-              <ArrowLeft size={22} color="white" />
-            </button>
+    <div className="min-h-screen bg-vxr-bg">
+      <AppHeader showBack />
 
-            <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shadow-sm">
-                <span className="font-black text-lg" style={{ color: "#e8756a" }}>V</span>
+      <PageHero
+        eyebrow={`${wishlist.length} saved`}
+        title="Your wishlist"
+        subtitle="Homes you've saved for later. Tap the heart on any listing to add it here."
+      />
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10">
+        {wishlist.length > 0 && (
+          <div className="flex items-center justify-end mb-6">
+            {selectMode ? (
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={cancelSelect}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  icon={Trash2}
+                  disabled={selectedIds.size === 0}
+                  onClick={confirmRemove}
+                >
+                  Remove ({selectedIds.size})
+                </Button>
               </div>
-              <span className="font-bold text-white text-lg tracking-wide">ViewxRent</span>
-            </div>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={Trash2}
+                onClick={enterSelectMode}
+              >
+                Edit
+              </Button>
+            )}
           </div>
+        )}
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
-            <button onClick={() => navigate("/home2")} style={{
-              background: "none", border: "none", cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", padding: 4
-            }}>
-              <Home size={22} color="white" />
-            </button>
-
-            <button style={{
-              background: "none", border: "none", cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              padding: 4, position: "relative"
-            }}>
-              <Bell size={22} color="white" />
-              <span style={{
-                position: "absolute", top: 2, right: 2,
-                width: 8, height: 8, borderRadius: "50%",
-                background: "#ff3b30", border: "1.5px solid #f0a090"
-              }} />
-            </button>
-
-            <button
-              onClick={() => setDropdownOpen(!dropdownOpen)}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                background: "white", border: "none", cursor: "pointer",
-                borderRadius: 999, padding: "5px 14px 5px 6px",
-                gap: 24, minWidth: 100,
-                boxShadow: "0 1px 4px rgba(0,0,0,0.08)"
-              }}
-            >
-              <div style={{
-                width: 34, height: 34, borderRadius: "50%",
-                border: "2.5px solid #e8756a",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                position: "relative", overflow: "hidden", flexShrink: 0
-              }}>
-                <div style={{
-                  position: "absolute", top: 6, left: "50%",
-                  transform: "translateX(-50%)",
-                  width: 11, height: 11, borderRadius: "50%", background: "#e8756a"
-                }} />
-                <div style={{
-                  position: "absolute", bottom: -2, left: "50%",
-                  transform: "translateX(-50%)",
-                  width: 20, height: 13, borderRadius: "50% 50% 0 0", background: "#e8756a"
-                }} />
-              </div>
-              <div style={{
-                width: 0, height: 0,
-                borderLeft: "6px solid transparent",
-                borderRight: "6px solid transparent",
-                borderTop: "8px solid #222",
-                flexShrink: 0
-              }} />
-            </button>
-
-            {dropdownOpen && <ProfileDropdown onLogout={handleLogout} />}
-          </div>
-        </div>
-      </nav>
-
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-3">
-            <Heart size={32} className="text-[#e8756a]" fill="#e8756a" />
-            <h1 className="text-3xl font-bold text-gray-800">Your Wishlists</h1>
-          </div>
-          {wishlist.length > 0 && (
-            <button
-              onClick={handleRemoveAll}
-              className="flex items-center gap-2 px-4 py-2 text-red-500 hover:bg-red-50 rounded-lg transition"
-            >
-              <Trash2 size={18} />
-              <span>Remove All</span>
-            </button>
-          )}
-        </div>
-        <p className="text-gray-500 text-lg mb-8 ml-11">Properties you've saved for later</p>
-
-        {/* Divider */}
-        <div className="border-t border-gray-200 mb-8"></div>
-
-        {/* Wishlist Items */}
         {loading ? (
-          <div className="flex items-center justify-center py-16 text-gray-500">
+          <div className="flex items-center justify-center py-16 font-body text-vxr-text-sub">
             <Loader2 size={20} className="animate-spin mr-2" /> Loading your saved properties…
           </div>
         ) : wishlist.length === 0 ? (
-          <div className="text-center py-16">
-            <Heart size={64} className="mx-auto text-gray-300 mb-4" />
-            <h2 className="text-2xl font-semibold text-gray-700 mb-2">Your wishlist is empty</h2>
-            <p className="text-gray-500 mb-6">Start saving properties you love by clicking the heart icon</p>
-            <button
-              onClick={() => navigate("/home2")}
-              className="px-6 py-3 text-white rounded-lg font-medium hover:opacity-90 transition"
-              style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-            >
-              Browse Properties
-            </button>
-          </div>
+          <EmptyState
+            icon={Heart}
+            title="No saved homes yet"
+            message="Tap the heart on any listing to save it here for later."
+            action={
+              <Button onClick={() => navigate("/home2")}>Browse homes</Button>
+            }
+          />
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {wishlist.map((property) => (
-              <div key={property.id} className="relative">
-                <PropertyCard
-                  property={property}
-                  onView={() => navigate(`/unit/${property.id}`)}
-                />
-              </div>
-            ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+            {wishlist.map((property) => {
+              const checked = selectedIds.has(property.id);
+              return (
+                <div
+                  key={property.id}
+                  className="relative"
+                  onClick={
+                    selectMode
+                      ? (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleSelect(property.id);
+                        }
+                      : undefined
+                  }
+                  style={selectMode ? { cursor: "pointer" } : undefined}
+                >
+                  <PropertyCard
+                    property={property}
+                    onView={
+                      selectMode
+                        ? () => toggleSelect(property.id)
+                        : () => navigate(`/unit/${property.id}`)
+                    }
+                  />
+                  {selectMode && (
+                    <div
+                      className={`absolute top-3 left-3 w-7 h-7 rounded-full flex items-center justify-center shadow-vxr-sm z-10 ${
+                        checked
+                          ? "bg-vxr-accent"
+                          : "bg-white/95 border border-vxr-border"
+                      }`}
+                    >
+                      {checked && <Check size={16} className="text-white" />}
+                    </div>
+                  )}
+                  {selectMode && checked && (
+                    <div className="absolute inset-0 rounded-vxr pointer-events-none ring-2 ring-vxr-accent" />
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
+      <Footer />
     </div>
   );
 }

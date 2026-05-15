@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  ArrowLeft, RefreshCw, Search, Users, AlertCircle,
+  RefreshCw, Search, Users, AlertCircle,
   Home, Mail, Phone, MessageCircle, CreditCard,
   FileText, Calendar, Clock, Building2, Loader2,
   LogOut, X, ShieldAlert, CheckCircle2, XCircle,
 } from "lucide-react";
 import { useAuth } from "./context/AuthContext.jsx";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import AppHeader from "./components/AppHeader.jsx";
+import {
+  Card, Button, Badge, Avatar, Input, Modal, Stat, EmptyState, Section,
+} from "./components/vxr";
 import { fetchActiveTenants, fetchLandlordReports } from "./lib/tenantManagementService";
 import { getOrCreateConversation } from "./lib/messagingService";
 import {
@@ -16,16 +19,6 @@ import {
   withdrawMutualTermination,
 } from "./lib/postRentService";
 
-// ─── Brand tokens ─────────────────────────────────────────────────────────────
-const BRAND  = "#F36C6C";
-const CORAL  = "#E8735A";
-const LIGHT  = "#FF8A80";
-const INK    = "#101321";
-const MUTED  = "#6B7280";
-const BG     = "#FAF7F6";
-const BORDER = "#EFE7E5";
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 function fmtDate(iso) {
@@ -48,55 +41,23 @@ function resolveName(profile, app) {
   return `${app?.first_name ?? ""} ${app?.last_name ?? ""}`.trim();
 }
 
-// ─── TenantAvatar ─────────────────────────────────────────────────────────────
 function TenantAvatar({ name, url }) {
-  const [imgErr, setImgErr] = useState(false);
-  const initial = (name || "?")[0].toUpperCase();
-
-  const fallback = (
-    <div
-      className="flex-shrink-0 flex items-center justify-center rounded-2xl text-white font-bold text-xl select-none"
-      style={{
-        width: 52, height: 52,
-        background: `linear-gradient(135deg, ${LIGHT}, ${BRAND})`,
-        boxShadow: `0 3px 8px ${BRAND}40`,
-      }}
-    >
-      {initial}
-    </div>
-  );
-
-  if (!url || imgErr) return fallback;
-
-  return (
-    <img
-      src={url}
-      alt={name}
-      onError={() => setImgErr(true)}
-      className="flex-shrink-0 object-cover rounded-2xl"
-      style={{
-        width: 52, height: 52,
-        border: `1.5px solid ${BRAND}4D`,
-        boxShadow: `0 3px 8px ${BRAND}2E`,
-      }}
-    />
-  );
+  return <Avatar name={name || "?"} src={url || null} gradient size={52} />;
 }
 
-// ─── Status pill helpers ──────────────────────────────────────────────────────
 function statusPill(tenant) {
   const t = tenant?.contract_termination;
   const term = Array.isArray(t) ? t[0] : t;
   const status = tenant.status;
-  if (status === "paid" && !term) return { label: "Active", bg: "#22C55E21", fg: "#15803D", dot: "#22C55E" };
+  if (status === "paid" && !term) return { label: "Active", tone: "success" };
   if (term?.type === "mutual" && !term.mutual_accepted_by_landlord_at && !term.mutual_withdrawn_at) {
-    return { label: "Mutual proposal", bg: "#FEF3C7", fg: "#92400E", dot: "#D97706" };
+    return { label: "Mutual proposal", tone: "warning" };
   }
-  if (status === "terminating") return { label: "Terminating", bg: "#FEF3C7", fg: "#92400E", dot: "#D97706" };
-  if (status === "expiring")    return { label: "Non-renewal", bg: "#FEF3C7", fg: "#92400E", dot: "#D97706" };
-  if (status === "terminated" || status === "ended") return { label: "Awaiting close-out", bg: "#FEF3C7", fg: "#92400E", dot: "#D97706" };
-  if (status === "closed")      return { label: "Closed", bg: "#E2E8F0", fg: "#475569", dot: "#94A3B8" };
-  return { label: "Active", bg: "#22C55E21", fg: "#15803D", dot: "#22C55E" };
+  if (status === "terminating") return { label: "Terminating", tone: "warning" };
+  if (status === "expiring")    return { label: "Non-renewal", tone: "warning" };
+  if (status === "terminated" || status === "ended") return { label: "Awaiting close-out", tone: "warning" };
+  if (status === "closed")      return { label: "Closed", tone: "neutral" };
+  return { label: "Active", tone: "success" };
 }
 
 function tenantTermination(tenant) {
@@ -104,7 +65,6 @@ function tenantTermination(tenant) {
   return Array.isArray(t) ? t[0] : t;
 }
 
-// ─── TenantCard ───────────────────────────────────────────────────────────────
 function TenantCard({ tenant, openReports, chatLoading, onReports, onPayments, onChat,
   onTerminateMTM, onProposeMutual, onNonRenewal, onEvict, onAcceptMutual, onWithdrawMutual,
   onMoveOut, actionBusy,
@@ -148,34 +108,25 @@ function TenantCard({ tenant, openReports, chatLoading, onReports, onPayments, o
   ];
 
   return (
-    <div
-      className="bg-white rounded-2xl p-4"
-      style={{ border: `1px solid ${BORDER}`, boxShadow: `0 4px 14px ${BRAND}0F` }}
-    >
-      {/* ── Header ─────────────────────────────────────── */}
+    <Card className="p-5">
+      {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <TenantAvatar name={name} url={profile.avatar_url || ""} />
         <div className="flex-1 min-w-0">
-          <p className="font-bold text-base truncate" style={{ color: INK }}>
+          <p className="font-display font-bold text-base text-vxr-text truncate">
             {name || "Tenant"}
           </p>
           <div className="flex items-center gap-1 mt-0.5">
-            <Home size={12} color={MUTED} />
-            <p className="text-xs truncate" style={{ color: MUTED }}>{title}</p>
+            <Home size={12} className="text-vxr-text-sub" />
+            <p className="font-body text-xs text-vxr-text-sub truncate">{title}</p>
           </div>
         </div>
-        <span
-          className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold flex-shrink-0"
-          style={{ background: pill.bg, color: pill.fg }}
-        >
-          <span className="w-2 h-2 rounded-full inline-block" style={{ background: pill.dot }} />
-          {pill.label}
-        </span>
+        <Badge tone={pill.tone}>{pill.label}</Badge>
       </div>
 
       {/* Termination summary line */}
       {term && (
-        <div className="text-[11px] mb-3 px-2 py-2 rounded-lg" style={{ background: "#FEF3C7", color: "#92400E" }}>
+        <div className="text-[11px] mb-3 px-2.5 py-2 rounded-vxr-sm bg-vxr-warning-soft text-vxr-warning font-body">
           {term.type === "mutual" && !term.mutual_accepted_by_landlord_at && !term.mutual_withdrawn_at && term.initiated_by === "tenant" && (
             <>Tenant proposed mutual termination effective <strong>{fmtDate(term.effective_date)}</strong>.</>
           )}
@@ -189,183 +140,174 @@ function TenantCard({ tenant, openReports, chatLoading, onReports, onPayments, o
         </div>
       )}
 
-      {/* ── Info row ───────────────────────────────────── */}
-      <div
-        className="flex rounded-xl overflow-hidden mb-3"
-        style={{ background: BG, border: `1px solid ${BORDER}` }}
-      >
+      {/* Info row */}
+      <div className="flex rounded-vxr-md overflow-hidden mb-3 bg-vxr-surface2 border border-vxr-border">
         {stats.map((s, i) => (
           <div key={s.label} className="flex-1 flex flex-col items-center py-3 relative">
             {i > 0 && (
-              <div
-                className="absolute left-0 top-1/2 -translate-y-1/2 w-px"
-                style={{ height: 30, background: BORDER }}
-              />
+              <div className="absolute left-0 top-1/2 -translate-y-1/2 w-px h-[30px] bg-vxr-border" />
             )}
-            <s.icon size={14} color={s.accent ? BRAND : BRAND} />
+            <s.icon size={14} className="text-vxr-accent" />
             <p
-              className="text-sm font-bold mt-1 truncate max-w-full px-1"
-              style={{ color: s.accent ? BRAND : INK }}
+              className={`font-display text-sm font-bold mt-1 truncate max-w-full px-1 ${
+                s.accent ? "text-vxr-accent" : "text-vxr-text"
+              }`}
             >
               {s.value}
             </p>
-            <p className="text-[10px]" style={{ color: MUTED }}>{s.label}</p>
+            <p className="font-body text-[10px] text-vxr-text-sub">{s.label}</p>
           </div>
         ))}
       </div>
 
-      {/* ── Contact chips ──────────────────────────────── */}
+      {/* Contact chips */}
       {(email || phone) && (
         <div className="flex flex-wrap gap-1.5 mb-3">
           {email && (
-            <span
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs"
-              style={{ background: `${BRAND}0F`, border: `1px solid ${BRAND}33`, color: INK }}
-            >
-              <Mail size={11} color={BRAND} />
+            <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-body text-vxr-text bg-vxr-accent-soft border border-vxr-accent/20">
+              <Mail size={11} className="text-vxr-accent" />
               {email}
             </span>
           )}
           {phone && (
-            <span
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs"
-              style={{ background: `${BRAND}0F`, border: `1px solid ${BRAND}33`, color: INK }}
-            >
-              <Phone size={11} color={BRAND} />
+            <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-body text-vxr-text bg-vxr-accent-soft border border-vxr-accent/20">
+              <Phone size={11} className="text-vxr-accent" />
               {phone}
             </span>
           )}
         </div>
       )}
 
-      {/* ── Actions ────────────────────────────────────── */}
-      <div
-        className="flex rounded-xl overflow-hidden"
-        style={{ border: `1px solid ${BORDER}` }}
-      >
+      {/* Quick-action row */}
+      <div className="flex rounded-vxr-md overflow-hidden border border-vxr-border">
         {actions.map((a, i) => (
           <button
             key={a.label}
             onClick={a.onClick}
             disabled={a.loading}
-            className="flex-1 flex flex-col items-center py-2.5 gap-1 hover:bg-red-50 active:bg-red-100 transition-colors relative disabled:opacity-60"
+            className="flex-1 flex flex-col items-center py-2.5 gap-1 hover:bg-vxr-accent-soft active:bg-vxr-accent-soft transition-colors relative disabled:opacity-60"
           >
             {i > 0 && (
-              <div
-                className="absolute left-0 top-1/2 -translate-y-1/2 w-px"
-                style={{ height: 22, background: BORDER }}
-              />
+              <div className="absolute left-0 top-1/2 -translate-y-1/2 w-px h-[22px] bg-vxr-border" />
             )}
             {a.loading
-              ? <Loader2 size={18} color={BRAND} className="animate-spin" />
-              : <a.icon size={18} color={BRAND} />
+              ? <Loader2 size={18} className="text-vxr-accent animate-spin" />
+              : <a.icon size={18} className="text-vxr-accent" />
             }
-            <span className="text-xs font-semibold" style={{ color: BRAND }}>{a.label}</span>
+            <span className="font-body text-xs font-semibold text-vxr-accent">{a.label}</span>
           </button>
         ))}
       </div>
 
-      {/* ── Lease actions ──────────────────────────────── */}
+      {/* Lease actions */}
       <div className="mt-3 flex flex-wrap gap-2">
         {tenantProposedMutual && (
           <>
-            <button
+            <Button
+              variant="success"
+              size="sm"
+              icon={CheckCircle2}
               onClick={() => onAcceptMutual(tenant)}
               disabled={actionBusy}
-              className="flex-1 min-w-[120px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-white disabled:opacity-50"
-              style={{ background: "#22C55E" }}
+              className="flex-1 min-w-[120px]"
             >
-              <CheckCircle2 size={14} /> Accept proposal
-            </button>
-            <button
+              Accept proposal
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={XCircle}
               onClick={() => onWithdrawMutual(tenant)}
               disabled={actionBusy}
-              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border disabled:opacity-50"
-              style={{ borderColor: BORDER, color: INK }}
             >
-              <XCircle size={14} /> Decline
-            </button>
+              Decline
+            </Button>
           </>
         )}
         {landlordProposedMutual && (
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={X}
             onClick={() => onWithdrawMutual(tenant)}
             disabled={actionBusy}
-            className="flex-1 min-w-[120px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border disabled:opacity-50"
-            style={{ borderColor: BORDER, color: INK }}
+            className="flex-1 min-w-[120px]"
           >
-            <X size={14} /> Withdraw proposal
-          </button>
+            Withdraw proposal
+          </Button>
         )}
         {isActiveNoTerm && (
           <>
             {isMTM && (
-              <button
+              <Button
+                variant="danger"
+                size="sm"
+                icon={LogOut}
                 onClick={() => onTerminateMTM(tenant)}
                 disabled={actionBusy}
-                className="flex-1 min-w-[120px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border disabled:opacity-50"
-                style={{ borderColor: "#FCA5A5", color: "#B91C1C" }}
+                className="flex-1 min-w-[120px]"
               >
-                <LogOut size={14} /> 30-day Notice
-              </button>
+                30-day Notice
+              </Button>
             )}
             {!isMTM && (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={LogOut}
                 onClick={() => onProposeMutual(tenant)}
                 disabled={actionBusy}
-                className="flex-1 min-w-[120px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border disabled:opacity-50"
-                style={{ borderColor: BORDER, color: INK }}
+                className="flex-1 min-w-[120px]"
               >
-                <LogOut size={14} /> Propose mutual
-              </button>
+                Propose mutual
+              </Button>
             )}
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => onNonRenewal(tenant)}
               disabled={actionBusy}
-              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border disabled:opacity-50"
-              style={{ borderColor: BORDER, color: INK }}
             >
               Do Not Renew
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              icon={ShieldAlert}
               onClick={() => onEvict(tenant)}
               disabled={actionBusy}
-              className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-50"
-              style={{ background: "#FEE2E2", color: "#B91C1C" }}
             >
-              <ShieldAlert size={14} /> Evict
-            </button>
+              Evict
+            </Button>
           </>
         )}
         {inMoveOutFlow && (
-          <button
+          <Button
+            size="sm"
+            icon={FileText}
             onClick={() => onMoveOut(tenant)}
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-white"
-            style={{ background: BRAND }}
+            className="flex-1"
           >
-            <FileText size={14} /> Move-out checklist
-          </button>
+            Move-out checklist
+          </Button>
         )}
       </div>
-    </div>
+    </Card>
   );
 }
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
 export default function TenantManagement() {
   const navigate = useNavigate();
-  const { user, profile, isAuthenticated } = useAuth();
+  const { user, isAuthenticated } = useAuth();
 
-  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [loading,      setLoading]      = useState(true);
   const [tenants,      setTenants]      = useState([]);
   const [openReports,  setOpenReports]  = useState([]);
   const [query,        setQuery]        = useState("");
-  const [chatLoading,  setChatLoading]  = useState(null); // contract id
+  const [chatLoading,  setChatLoading]  = useState(null);
   const [actionBusy,   setActionBusy]   = useState(false);
-  const [terminationModal, setTerminationModal] = useState(null); // { tenant, kind }
+  const [terminationModal, setTerminationModal] = useState(null);
 
-  // Redirect unauthenticated visitors
   useEffect(() => {
     if (isAuthenticated === false) navigate("/login");
   }, [isAuthenticated, navigate]);
@@ -386,7 +328,6 @@ export default function TenantManagement() {
 
   useEffect(() => { load(); }, [load]);
 
-  // ── Derived ─────────────────────────────────────────────────────────────────
   const filtered = query.trim()
     ? tenants.filter((t) => {
         const q   = query.toLowerCase();
@@ -407,7 +348,6 @@ export default function TenantManagement() {
 
   const uniqueProps = new Set(tenants.map((t) => t.listing_id).filter(Boolean)).size;
 
-  // ── Chat handler ────────────────────────────────────────────────────────────
   async function handleChat(tenant) {
     if (!user?.id || !tenant.tenant_id) return;
     setChatLoading(tenant.id);
@@ -420,7 +360,6 @@ export default function TenantManagement() {
     if (conv?.id) navigate(`/messages?c=${conv.id}`);
   }
 
-  // ── Lease action handlers ───────────────────────────────────────────────────
   const onTerminateMTM   = (tenant) => setTerminationModal({ tenant, kind: "notice" });
   const onProposeMutual  = (tenant) => setTerminationModal({ tenant, kind: "mutual" });
   const onNonRenewal     = (tenant) => setTerminationModal({ tenant, kind: "non_renewal" });
@@ -461,160 +400,89 @@ export default function TenantManagement() {
     await load();
   };
 
-  const initial = (profile?.full_name || user?.email || "?")[0].toUpperCase();
-
-  // ── Loading ──────────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: BG }}>
-        <Loader2 className="animate-spin" size={40} color={BRAND} />
+      <div className="min-h-screen bg-vxr-bg flex items-center justify-center">
+        <Loader2 className="animate-spin text-vxr-accent" size={40} />
       </div>
     );
   }
 
-  // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen" style={{ background: BG }}>
+    <div className="min-h-screen bg-vxr-bg flex flex-col">
+      <AppHeader showBack />
 
-      {/* ── Hero ──────────────────────────────────────────────────────────────── */}
-      <div
-        className="relative overflow-hidden"
-        style={{
-          background: `linear-gradient(135deg, ${LIGHT} 0%, ${BRAND} 50%, ${CORAL} 100%)`,
-          paddingBottom: 56,
-        }}
-      >
-        {/* Decorative circles */}
-        <div
-          className="absolute rounded-full pointer-events-none"
-          style={{ width: 240, height: 240, right: -80, top: -80, background: "rgba(255,255,255,0.08)" }}
-        />
-        <div
-          className="absolute rounded-full pointer-events-none"
-          style={{ width: 180, height: 180, left: -60, bottom: -90, background: "rgba(255,255,255,0.06)" }}
-        />
-
-        {/* Top nav row */}
-        <div className="relative z-10 max-w-5xl mx-auto flex items-center justify-between px-4 pt-4 pb-2">
-          <button
-            onClick={() => navigate(-1)}
-            className="p-2 rounded-full bg-white/20 hover:bg-white/30 transition-colors"
-            aria-label="Go back"
-          >
-            <ArrowLeft size={20} color="white" />
-          </button>
-
-          <span className="text-white text-[10px] font-bold tracking-[1.4px] uppercase px-3 py-1 rounded-full bg-white/20">
-            VIEWXRENT · LANDLORD
-          </span>
-
-          <div className="flex items-center gap-2">
+      {/* Hero */}
+      <div className="relative bg-vxr-gradient overflow-hidden">
+        <div className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-white/10 pointer-events-none" />
+        <div className="absolute -bottom-16 -left-8 w-36 h-36 rounded-full bg-white/[0.07] pointer-events-none" />
+        <div className="relative max-w-7xl mx-auto px-6 md:px-8 py-12">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="font-body text-[11px] font-bold uppercase tracking-wider text-white/80 mb-2">
+                ViewxRent · Landlord
+              </div>
+              <h1 className="font-display text-3xl md:text-4xl font-extrabold text-white tracking-tight leading-tight">
+                Tenants &amp; Stays
+              </h1>
+              <p className="mt-2 font-body text-[15px] text-white/85">
+                {tenants.length === 0
+                  ? "You have no active tenants yet"
+                  : `Manage ${tenants.length} active tenant${tenants.length === 1 ? "" : "s"}`}
+              </p>
+            </div>
             <button
               onClick={load}
-              className="p-2 rounded-full bg-white/20 hover:bg-white/30 transition-colors"
               aria-label="Refresh"
+              className="w-10 h-10 rounded-full bg-white/20 text-white hover:bg-white/30 flex items-center justify-center transition shrink-0"
             >
-              <RefreshCw size={18} color="white" />
+              <RefreshCw size={18} />
             </button>
-            <div className="relative">
-              <button
-                onClick={() => setDropdownOpen((o) => !o)}
-                className="w-9 h-9 rounded-full bg-white/30 flex items-center justify-center text-white font-bold text-sm border-2 border-white/50 hover:bg-white/40 transition-colors"
-              >
-                {initial}
-              </button>
-              {dropdownOpen && (
-                <div className="absolute right-0 top-11 z-50">
-                  <ProfileDropdown onLogout={() => setDropdownOpen(false)} />
-                </div>
-              )}
-            </div>
           </div>
-        </div>
-
-        {/* Title block */}
-        <div className="relative z-10 max-w-5xl mx-auto px-6 pt-3">
-          <h1 className="text-[28px] font-extrabold text-white leading-tight">
-            Tenants &amp; Stays
-          </h1>
-          <p className="text-white/90 text-sm mt-1">
-            {tenants.length === 0
-              ? "You have no active tenants yet"
-              : `Manage ${tenants.length} active tenant${tenants.length === 1 ? "" : "s"}`}
-          </p>
         </div>
       </div>
 
-      {/* ── Body (overlaps hero) ──────────────────────────────────────────────── */}
-      <div className="max-w-5xl mx-auto px-4 -mt-9 pb-14 relative z-10">
-
-        {/* Stats card */}
-        <div
-          className="bg-white rounded-2xl mb-5"
-          style={{ boxShadow: `0 8px 24px ${BRAND}2A` }}
-        >
-          <div className="flex divide-x" style={{ "--tw-divide-opacity": 1, borderColor: BORDER }}>
-            {[
-              { icon: Users,        color: BRAND,  label: "Active",       value: tenants.length },
-              { icon: AlertCircle,  color: CORAL,  label: "Open reports", value: openReports.length },
-              { icon: Building2,    color: LIGHT,  label: "Properties",   value: uniqueProps },
-            ].map((s) => (
-              <div key={s.label} className="flex-1 flex flex-col items-center py-4"
-                style={{ borderColor: BORDER }}>
-                <div
-                  className="rounded-full flex items-center justify-center mb-2"
-                  style={{ width: 40, height: 40, background: `${s.color}21` }}
-                >
-                  <s.icon size={18} color={s.color} />
-                </div>
-                <p className="text-lg font-bold" style={{ color: INK }}>{s.value}</p>
-                <p className="text-xs" style={{ color: MUTED }}>{s.label}</p>
-              </div>
-            ))}
-          </div>
+      <div className="-mt-8 flex-1 max-w-7xl mx-auto w-full px-6 pb-12 relative z-10">
+        {/* Stats */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
+          <Stat label="Active tenants" value={tenants.length}     icon={Users} />
+          <Stat label="Open reports"   value={openReports.length} icon={AlertCircle} />
+          <Stat label="Properties"     value={uniqueProps}        icon={Building2} />
         </div>
 
         {/* Search */}
-        <div
-          className="flex items-center gap-3 bg-white rounded-xl px-4 py-3 mb-4"
-          style={{ border: `1px solid ${BORDER}` }}
-        >
-          <Search size={18} color={BRAND} className="flex-shrink-0" />
-          <input
-            type="text"
+        <div className="mb-5">
+          <Input
+            icon={Search}
             placeholder="Search tenant, property, email…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="flex-1 outline-none text-sm bg-transparent placeholder-gray-400"
-            style={{ color: INK }}
           />
         </div>
 
         {/* Section header */}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <div className="w-1 h-5 rounded" style={{ background: BRAND }} />
-            <h2 className="text-base font-bold" style={{ color: INK }}>Active Tenants</h2>
-          </div>
-          <span className="text-xs font-semibold" style={{ color: MUTED }}>{filtered.length}</span>
-        </div>
+        <Section
+          title="Active Tenants"
+          action={
+            <span className="font-mono text-xs font-semibold text-vxr-text-sub">
+              {filtered.length}
+            </span>
+          }
+        />
 
         {/* Tenant grid / empty state */}
         {filtered.length === 0 ? (
-          <div
-            className="bg-white rounded-2xl flex flex-col items-center py-12 px-6 text-center"
-            style={{ border: `1px solid ${BORDER}` }}
-          >
-            <Users size={56} color={`${BRAND}80`} />
-            <p className="mt-3 font-semibold text-base" style={{ color: INK }}>
-              No active tenants yet
-            </p>
-            <p className="mt-1 text-sm max-w-xs" style={{ color: MUTED }}>
-              {query
-                ? "No tenants match your search."
-                : "Tenants appear here once their contract is fully signed and paid."}
-            </p>
-          </div>
+          <Card>
+            <EmptyState
+              icon={Users}
+              title="No active tenants yet"
+              message={
+                query
+                  ? "No tenants match your search."
+                  : "Tenants appear here once their contract is fully signed and paid."
+              }
+            />
+          </Card>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {filtered.map((tenant) => (
@@ -642,10 +510,10 @@ export default function TenantManagement() {
 
       {/* Chat loading overlay */}
       {chatLoading && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 flex flex-col items-center gap-3 shadow-xl">
-            <Loader2 className="animate-spin" size={32} color={BRAND} />
-            <p className="text-sm font-medium" style={{ color: INK }}>Opening chat…</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-vxr-text/40 backdrop-blur-sm">
+          <div className="bg-vxr-surface rounded-vxr-md p-6 flex flex-col items-center gap-3 shadow-vxr-lg">
+            <Loader2 className="animate-spin text-vxr-accent" size={32} />
+            <p className="font-body text-sm font-medium text-vxr-text">Opening chat…</p>
           </div>
         </div>
       )}
@@ -659,12 +527,10 @@ export default function TenantManagement() {
           onSubmit={submitTermination}
         />
       )}
-
     </div>
   );
 }
 
-// ─── LandlordTerminationModal ─────────────────────────────────────────────────
 function LandlordTerminationModal({ tenant, kind, busy, onClose, onSubmit }) {
   const [today] = useState(() => new Date().toISOString().slice(0, 10));
   const [effectiveDate, setEffectiveDate] = useState(() => {
@@ -673,74 +539,79 @@ function LandlordTerminationModal({ tenant, kind, busy, onClose, onSubmit }) {
     return new Date().toISOString().slice(0, 10);
   });
   const [reason, setReason]               = useState("");
-  const [confirm, setConfirm]             = useState(false);
+  const [confirmAck, setConfirmAck]       = useState(false);
 
   const config = {
     notice:      { title: "30-day notice (month-to-month)", needReason: false, evidence: false },
     mutual:      { title: "Propose mutual termination",     needReason: true,  evidence: false },
     non_renewal: { title: "Do not renew this lease",         needReason: false, evidence: false },
-    eviction:    { title: "Initiate eviction",                needReason: true,  evidence: true },
+    eviction:    { title: "Initiate eviction",               needReason: true,  evidence: true },
   }[kind];
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!confirm) return;
+  const handleSubmit = async () => {
+    if (!confirmAck) return;
     if (config.needReason && !reason.trim()) return;
     await onSubmit({ kind, reason: reason.trim() || null, effectiveDate });
   };
 
+  const submitDisabled =
+    !confirmAck || busy || (config.needReason && !reason.trim());
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
+    <Modal
+      open
+      onClose={onClose}
+      title={config.title}
+      subtitle={
+        <>Tenant: <strong>{resolveName(tenant.tenant_profile, tenant.application)}</strong></>
+      }
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={handleSubmit} disabled={submitDisabled}>
+            {busy && <Loader2 size={14} className="animate-spin" />}
+            {kind === "mutual" ? "Send proposal" : "Confirm"}
+          </Button>
+        </>
+      }
     >
-      <form
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={handleSubmit}
-        className="bg-white rounded-2xl w-full max-w-md p-5 shadow-xl"
-      >
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h3 className="text-lg font-bold" style={{ color: INK }}>{config.title}</h3>
-            <p className="text-[12px] mt-1" style={{ color: MUTED }}>
-              Tenant: <strong>{resolveName(tenant.tenant_profile, tenant.application)}</strong>
-            </p>
+      <div className="flex flex-col gap-4">
+        <Input
+          type="date"
+          label="Effective date"
+          value={effectiveDate}
+          min={today}
+          onChange={(e) => setEffectiveDate(e.target.value)}
+        />
+
+        <div className="flex flex-col gap-1.5">
+          <label className="font-body text-[11px] font-semibold uppercase tracking-wider text-vxr-text-sub">
+            Reason {config.needReason && <span className="text-vxr-danger">*</span>}
+          </label>
+          <div className="bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md px-3.5 py-3 focus-within:border-vxr-accent transition-colors duration-150">
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              placeholder={
+                config.evidence
+                  ? "Lease violation details — include evidence reference if applicable"
+                  : "Optional"
+              }
+              className="w-full bg-transparent border-none outline-none font-body text-sm text-vxr-text placeholder:text-vxr-text-muted resize-y"
+            />
           </div>
-          <button type="button" onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100">
-            <X size={18} className="text-slate-500" />
-          </button>
         </div>
 
-        <label className="block">
-          <span className="text-xs font-semibold" style={{ color: INK }}>Effective date</span>
-          <input
-            type="date"
-            value={effectiveDate}
-            min={today}
-            onChange={(e) => setEffectiveDate(e.target.value)}
-            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#F36C6C]/40"
-          />
-        </label>
-
-        <label className="block mt-3">
-          <span className="text-xs font-semibold" style={{ color: INK }}>
-            Reason {config.needReason && <span className="text-red-500">*</span>}
-          </span>
-          <textarea
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            rows={3}
-            placeholder={config.evidence ? "Lease violation details — include evidence reference if applicable" : "Optional"}
-            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#F36C6C]/40"
-          />
-        </label>
-
-        <label className="mt-4 flex items-start gap-2 text-[12px] cursor-pointer" style={{ color: MUTED }}>
+        <label className="flex items-start gap-2 text-[12px] font-body text-vxr-text-sub cursor-pointer">
           <input
             type="checkbox"
-            checked={confirm}
-            onChange={(e) => setConfirm(e.target.checked)}
-            className="mt-0.5"
+            checked={confirmAck}
+            onChange={(e) => setConfirmAck(e.target.checked)}
+            className="mt-0.5 accent-vxr-accent"
           />
           <span>
             {kind === "mutual"
@@ -752,28 +623,7 @@ function LandlordTerminationModal({ tenant, kind, busy, onClose, onSubmit }) {
               : "I confirm the 30-day notice and that the tenancy will end on the effective date."}
           </span>
         </label>
-
-        <div className="mt-5 flex gap-2 justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="px-4 py-2 rounded-xl border border-slate-200 text-sm font-semibold hover:bg-slate-50"
-            style={{ color: INK }}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={!confirm || busy || (config.needReason && !reason.trim())}
-            className="px-4 py-2 rounded-xl text-white text-sm font-bold flex items-center gap-2 disabled:opacity-50"
-            style={{ background: BRAND }}
-          >
-            {busy && <Loader2 size={14} className="animate-spin" />}
-            {kind === "mutual" ? "Send proposal" : "Confirm"}
-          </button>
-        </div>
-      </form>
-    </div>
+      </div>
+    </Modal>
   );
 }

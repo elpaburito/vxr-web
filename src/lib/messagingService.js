@@ -85,8 +85,10 @@ export async function getOrCreateConversation(tenantId, landlordId, listingId = 
 }
 
 /**
- * Send a text message. The message_touch_conversation trigger will
- * update conversation.last_message + last_message_at.
+ * Send a text message. The message_touch_conversation trigger updates
+ * conversation.last_message + last_message_at, and the
+ * message_create_notification trigger inserts a notification for the
+ * recipient (see supabase/notification_module.sql).
  */
 export async function sendMessage(conversationId, senderId, content) {
   if (!conversationId || !senderId || !content?.trim()) {

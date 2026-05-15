@@ -1,13 +1,14 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Home, Bell, ArrowLeft, MapPin, Bed, Bath, Square,
+  Home, ArrowLeft, MapPin, Bed, Bath, Square,
   FileText, Eye, Check, X, AlertCircle, Users, ChevronRight,
   Loader2, Inbox, Send, Edit3,
 } from "lucide-react";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import AppHeader from "./components/AppHeader.jsx";
 import { supabase } from "./lib/supabase";
 import ApplicationEditModal from "./components/ApplicationEditModal.jsx";
+import VerifiedIdentityPanel from "./components/VerifiedIdentityPanel.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import { STATUS_STYLE } from "./data/enlistmentMock";
 import {
@@ -23,7 +24,6 @@ import {
 export default function EnlistmentApplications() {
   const navigate = useNavigate();
   const { user, profile, isAuthenticated } = useAuth();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   // Capability flags
   const [isLandlord, setIsLandlord] = useState(false);
@@ -43,8 +43,6 @@ export default function EnlistmentApplications() {
 
   // Edit-pending-application modal
   const [editAppId, setEditAppId] = useState(null);
-
-  const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
 
   const loadData = useCallback(async () => {
     if (!user?.id) return;
@@ -136,9 +134,6 @@ export default function EnlistmentApplications() {
         title={headerTitle}
         onBack={goBack}
         navigate={navigate}
-        dropdownOpen={dropdownOpen}
-        setDropdownOpen={setDropdownOpen}
-        initial={initial}
         isAuthenticated={isAuthenticated}
       />
 
@@ -151,7 +146,7 @@ export default function EnlistmentApplications() {
           <div className="flex flex-col items-center justify-center py-24 gap-2 text-slate-500">
             <AlertCircle size={28} className="text-red-400" />
             <p className="text-sm">{dataError}</p>
-            <button onClick={loadData} className="text-xs text-[#EC6138] underline">Retry</button>
+            <button onClick={loadData} className="text-xs text-vxr-accent underline">Retry</button>
           </div>
         ) : (
           <>
@@ -246,7 +241,7 @@ function RoleTabs({ tabKey, onChange, incomingCount, submittedCount }) {
             {label}
             <span
               className={`text-[10px] font-bold rounded-full px-1.5 min-w-[18px] h-[18px] flex items-center justify-center ${
-                active ? "bg-[#EC6138] text-white" : "bg-slate-100 text-slate-500"
+                active ? "bg-vxr-accent text-white" : "bg-slate-100 text-slate-500"
               }`}
             >
               {count}
@@ -295,7 +290,7 @@ function TenantApplicationsView({ applications, onBrowse, onEdit }) {
           <button
             onClick={onBrowse}
             className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-white text-sm font-semibold transition hover:opacity-90"
-            style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+            style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
           >
             Browse listings
           </button>
@@ -400,7 +395,7 @@ function TenantApplicationsView({ applications, onBrowse, onEdit }) {
               {status === "pending" && onEdit && (
                 <button
                   onClick={() => onEdit(app.id)}
-                  className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-[#EC6138] px-3.5 py-1.5 rounded-full border border-[#EC6138]/40 bg-white hover:bg-orange-50 transition"
+                  className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-vxr-accent px-3.5 py-1.5 rounded-full border border-vxr-accent/40 bg-white hover:bg-orange-50 transition"
                 >
                   <Edit3 size={12} /> Edit details
                 </button>
@@ -409,7 +404,7 @@ function TenantApplicationsView({ applications, onBrowse, onEdit }) {
                 <button
                   onClick={() => navigate(cta.go(contract.id))}
                   className="text-xs font-semibold text-white px-3.5 py-1.5 rounded-full transition hover:opacity-90"
-                  style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+                  style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
                 >
                   {cta.label}
                 </button>
@@ -483,7 +478,7 @@ function UnitCard({ unit, onOpen }) {
           <h3 className="font-bold text-slate-900 text-[15px] leading-snug">
             {unit.title}
           </h3>
-          <ChevronRight size={16} className="text-slate-400 mt-0.5 flex-shrink-0 group-hover:text-[#EC6138] transition" />
+          <ChevronRight size={16} className="text-slate-400 mt-0.5 flex-shrink-0 group-hover:text-vxr-accent transition" />
         </div>
 
         <div className="flex items-center gap-3 text-[11px] text-slate-500 mb-2">
@@ -508,7 +503,7 @@ function UnitCard({ unit, onOpen }) {
 
         <div className="flex items-center justify-between pt-3 border-t border-slate-100">
           <div>
-            <span className="text-lg font-bold text-[#EC6138]">
+            <span className="text-lg font-bold text-vxr-accent">
               ₱{unit.price.toLocaleString()}
             </span>
             <span className="text-[11px] text-slate-500">/month</span>
@@ -555,7 +550,7 @@ function ApplicationsView({ unit, applicants, onView }) {
             <span className="inline-flex items-center gap-1"><Bed size={12} />{unit.beds}</span>
             <span className="inline-flex items-center gap-1"><Bath size={12} />{unit.baths}</span>
             <span className="inline-flex items-center gap-1"><Square size={12} />{unit.size}</span>
-            <span className="text-[#EC6138] font-semibold ml-1">
+            <span className="text-vxr-accent font-semibold ml-1">
               ₱{unit.price.toLocaleString()}/mo
             </span>
           </div>
@@ -619,7 +614,7 @@ function ApplicantCard({ applicant, onView }) {
   const style = STATUS_STYLE[applicant.status];
   return (
     <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex flex-col md:flex-row md:items-center gap-4">
-      <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white font-bold flex items-center justify-center text-lg flex-shrink-0">
+      <div className="w-12 h-12 rounded-full bg-gradient-to-br bg-vxr-gradient text-white font-bold flex items-center justify-center text-lg flex-shrink-0">
         {applicant.name.split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase()}
       </div>
 
@@ -639,7 +634,7 @@ function ApplicantCard({ applicant, onView }) {
       <button
         onClick={onView}
         className="inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl text-white text-sm font-semibold transition hover:opacity-90 hover:shadow-md"
-        style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+        style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
       >
         <Eye size={14} />
         View Application
@@ -753,6 +748,11 @@ function DetailsView({ applicant, currentUser, onApprove, onReject }) {
         </div>
       </Card>
 
+      {/* Identity verification (PII-safe — see VerifiedIdentityPanel) */}
+      {applicant.verification && (
+        <VerifiedIdentityPanel data={applicant.verification} />
+      )}
+
       {/* Employment */}
       <Card>
         <SectionHead>Employment</SectionHead>
@@ -842,7 +842,7 @@ function DetailsView({ applicant, currentUser, onApprove, onReject }) {
             onClick={handleViewContract}
             disabled={contractLoading}
             className="w-full h-12 rounded-xl text-white font-semibold transition shadow-sm hover:shadow-md inline-flex items-center justify-center gap-2 disabled:opacity-60"
-            style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+            style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
           >
             {contractLoading ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
             {contractStatus === "paid"
@@ -1050,8 +1050,8 @@ function DocumentRow({ doc, signedUrl, onViewImage }) {
 function EmptyState({ icon: Icon, title, subtitle }) {
   return (
     <div className="text-center py-16">
-      <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-[#EC6138]/10 to-[#FF8E9E]/10 flex items-center justify-center mb-4">
-        <Icon size={28} className="text-[#EC6138]" />
+      <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br bg-vxr-accent-soft flex items-center justify-center mb-4">
+        <Icon size={28} className="text-vxr-accent" />
       </div>
       <h3 className="text-base font-bold text-slate-700">{title}</h3>
       <p className="text-sm text-slate-400 mt-1">{subtitle}</p>
@@ -1059,106 +1059,6 @@ function EmptyState({ icon: Icon, title, subtitle }) {
   );
 }
 
-// ============================================================================
-// Header (matches the brand used across the rest of the app)
-// ============================================================================
-
-function Header({ title, onBack, navigate, dropdownOpen, setDropdownOpen, initial, isAuthenticated }) {
-  return (
-    <nav
-      className="sticky top-0 z-50"
-      style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-      onClick={() => setDropdownOpen(false)}
-    >
-      <div
-        style={{ width: "100%", padding: "10px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <button
-            onClick={onBack}
-            style={{
-              background: "rgba(255,255,255,0.22)",
-              border: "none",
-              cursor: "pointer",
-              width: 36, height: 36, borderRadius: 10,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}
-            aria-label="Back"
-          >
-            <ArrowLeft size={18} color="white" />
-          </button>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shadow-sm">
-              <span className="font-black text-lg" style={{ color: "#e8756a" }}>V</span>
-            </div>
-            <div className="flex flex-col">
-              <span className="font-bold text-white text-[15px] tracking-wide leading-none">
-                {title}
-              </span>
-              <span className="text-[10px] text-white/70 mt-0.5 font-medium">
-                ViewxRent
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
-          <button
-            onClick={() => navigate("/home2")}
-            style={{
-              background: "none", border: "none", cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", padding: 4,
-            }}
-          >
-            <Home size={22} color="white" />
-          </button>
-
-          <button style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            padding: 4, position: "relative",
-          }}>
-            <Bell size={22} color="white" />
-            <span style={{
-              position: "absolute", top: 2, right: 2,
-              width: 8, height: 8, borderRadius: "50%",
-              background: "#ff3b30", border: "1.5px solid #f0a090",
-            }} />
-          </button>
-
-          {isAuthenticated && (
-            <button
-              onClick={() => setDropdownOpen(!dropdownOpen)}
-              style={{
-                display: "flex", alignItems: "center", gap: 8,
-                background: "white", border: "none", cursor: "pointer",
-                borderRadius: 999, padding: "5px 14px 5px 6px",
-                boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-              }}
-            >
-              <div style={{
-                width: 34, height: 34, borderRadius: "50%",
-                background: "linear-gradient(135deg, #EC6138, #FF8E9E)",
-                color: "white", fontWeight: 700,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 14,
-              }}>
-                {initial}
-              </div>
-              <div style={{
-                width: 0, height: 0,
-                borderLeft: "6px solid transparent",
-                borderRight: "6px solid transparent",
-                borderTop: "8px solid #222",
-              }} />
-            </button>
-          )}
-
-          {dropdownOpen && <ProfileDropdown />}
-        </div>
-      </div>
-    </nav>
-  );
+function Header({ onBack }) {
+  return <AppHeader showBack onBack={onBack} />;
 }

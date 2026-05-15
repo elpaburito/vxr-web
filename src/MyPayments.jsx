@@ -1,29 +1,25 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  ArrowLeft, RefreshCw, BellRing, CheckCircle2,
+  RefreshCw, BellRing, CheckCircle2,
   CreditCard, Loader2, Receipt, FileSignature, Hourglass,
-  Home, ChevronRight, Search,
+  Home, ChevronRight, Search, Trash2, PlusCircle, Filter,
 } from "lucide-react";
 import { useAuth } from "./context/AuthContext.jsx";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import AppHeader from "./components/AppHeader.jsx";
 import {
   fetchMyPaymentsWithContext,
   fetchMyInProgressContracts,
 } from "./lib/paymentsService";
-
-// ─── Brand tokens (match mobile palette) ──────────────────────────────────────
-const ORANGE      = "#FF9800";
-const LIGHT_OR    = "#FFF3E0";
-const INK         = "#333333";
-const MUTED       = "#666666";
-const BORDER      = "#EEEEEE";
-const SUCCESS     = "#4CAF50";
-const SUCCESS_BG  = "#E8F5E9";
-const DANGER      = "#EF5350";
-const SLATE       = "#607D8B";
-const INFO        = "#1E88E5";
-const INFO_BG     = "#E3F2FD";
+import {
+  listMyPaymentMethods, deletePaymentMethod, setDefaultPaymentMethod,
+} from "./lib/paymentMethodsService";
+import { METHOD_LABELS } from "./lib/paymongo";
+import {
+  Badge, Button, Card, EmptyState, PageHero, Stat, Tabs, PaymentMethodIcon,
+} from "./components/vxr";
+import AddPaymentMethodModal from "./components/AddPaymentMethodModal.jsx";
+import Footer from "./Footer.jsx";
 
 const PHP = (n) =>
   `₱${Number(n ?? 0).toLocaleString("en-PH", {
@@ -39,90 +35,147 @@ function fmtDate(iso) {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
-const STATUS_COLOR = {
-  succeeded: SUCCESS,
-  pending:   ORANGE,
-  refunded:  SLATE,
-  failed:    DANGER,
+// Map payment status → vxr Badge tone + display label.
+const STATUS_BADGE = {
+  succeeded:       { tone: "success", label: "Succeeded" },
+  pending:         { tone: "warning", label: "Pending"   },
+  requires_action: { tone: "info",    label: "Action"    },
+  refunded:        { tone: "neutral", label: "Refunded"  },
+  failed:          { tone: "danger",  label: "Failed"    },
+  cancelled:       { tone: "neutral", label: "Cancelled" },
 };
 
-// Sort order for actionable contracts: ready-to-pay first, then sign-needed,
-// then waiting-on-landlord. Outside the component so it's a stable reference
-// for useMemo dep arrays.
+const STATUS_FILTERS = [
+  { value: "",          label: "All statuses" },
+  { value: "succeeded", label: "Succeeded"    },
+  { value: "pending",   label: "Pending"      },
+  { value: "failed",    label: "Failed"       },
+  { value: "refunded",  label: "Refunded"     },
+  { value: "cancelled", label: "Cancelled"    },
+];
+
+const METHOD_FILTERS = [
+  { value: "",              label: "All methods" },
+  { value: "card",          label: "Card"        },
+  { value: "gcash",         label: "GCash"       },
+  { value: "paymaya",       label: "Maya"        },
+  { value: "grab_pay",      label: "GrabPay"     },
+  { value: "bank_transfer", label: "Bank"        },
+];
+
+// Urgency order for actionable contracts (ready-to-pay first).
 const STATUS_ORDER = { fully_signed: 0, awaiting_tenant: 1, awaiting_landlord: 2 };
 
-// Per-contract action presets. Drives the action card that tells the
-// tenant exactly what to do for each in-progress contract.
 const ACTION_FOR_STATUS = {
   awaiting_tenant: {
-    Icon:    FileSignature,
-    color:   ORANGE,
-    bg:      LIGHT_OR,
-    title:   "Sign your contract",
-    body:    "Your landlord signed first. Review the contract and add your signature to unlock payment.",
-    cta:     "Review & sign",
-    go:      (id) => `/contract/${id}`,
+    Icon:     FileSignature,
+    badge:    { tone: "warning", label: "Sign needed" },
+    title:    "Sign your contract",
+    body:     "Your landlord signed first. Review the contract and add your signature to unlock payment.",
+    cta:      "Review & sign",
+    go:       (id) => `/contract/${id}`,
+    variant:  "primary",
   },
   awaiting_landlord: {
-    Icon:    Hourglass,
-    color:   INFO,
-    bg:      INFO_BG,
-    title:   "Awaiting landlord signature",
-    body:    "You've signed. The landlord needs to countersign before you can pay the move-in.",
-    cta:     "View contract",
-    go:      (id) => `/contract/${id}`,
+    Icon:     Hourglass,
+    badge:    { tone: "info", label: "Waiting" },
+    title:    "Awaiting landlord signature",
+    body:     "You've signed. The landlord needs to countersign before you can pay the move-in.",
+    cta:      "View contract",
+    go:       (id) => `/contract/${id}`,
+    variant:  "secondary",
   },
   fully_signed: {
-    Icon:    CreditCard,
-    color:   SUCCESS,
-    bg:      SUCCESS_BG,
-    title:   "Ready for move-in payment",
-    body:    "Both parties signed. Pay the move-in to activate your rental.",
-    cta:     "Pay now",
-    go:      (id) => `/contract/${id}/pay`,
+    Icon:     CreditCard,
+    badge:    { tone: "success", label: "Ready to pay" },
+    title:    "Ready for move-in payment",
+    body:     "Both parties signed. Pay the move-in to activate your rental.",
+    cta:      "Pay now",
+    go:       (id) => `/contract/${id}/pay`,
+    variant:  "primary",
   },
 };
+
+const HISTORY_PAGE_SIZE = 20;
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function MyPayments() {
   const navigate = useNavigate();
-  const { user, profile, isAuthenticated } = useAuth();
+  const { user, isAuthenticated } = useAuth();
 
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [loading,  setLoading]  = useState(true);
+  const [activeTab,  setActiveTab]  = useState("overview");
+  const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [payments, setPayments] = useState([]);
+  const [payments,   setPayments]   = useState([]);
   const [inProgress, setInProgress] = useState([]);
+  const [savedMethods, setSavedMethods] = useState([]);
   const [error, setError] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [busyMethodId, setBusyMethodId] = useState(null);
+  const [pageSize, setPageSize] = useState(HISTORY_PAGE_SIZE);
 
-  const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
+  // Sticky flag: once true, the empty-state banner stays "all caught up"
+  // even if the user filters their history down to zero rows.
+  const [hasAnyPaymentEver, setHasAnyPaymentEver] = useState(false);
+
+  // Filter bar state (History tab).
+  const [filterStatus,   setFilterStatus]   = useState("");
+  const [filterMethod,   setFilterMethod]   = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo,   setFilterDateTo]   = useState("");
+
+  const initialLoaded = useRef(false);
 
   useEffect(() => {
     if (isAuthenticated === false) navigate("/login");
   }, [isAuthenticated, navigate]);
 
+  useEffect(() => {
+    if (!user?.id) { setHasAnyPaymentEver(false); return; }
+    let cancelled = false;
+    fetchMyPaymentsWithContext({ tenantId: user.id }).then(({ data }) => {
+      if (!cancelled) setHasAnyPaymentEver((data?.length ?? 0) > 0);
+    });
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
   const refresh = useCallback(async ({ silent = false } = {}) => {
     if (!user?.id) return;
-    if (silent) setRefreshing(true); else setLoading(true);
+    if (silent || initialLoaded.current) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
-      const [pRes, cRes] = await Promise.all([
-        fetchMyPaymentsWithContext(user.id),
+      const [pRes, cRes, mRes] = await Promise.all([
+        fetchMyPaymentsWithContext({
+          tenantId:   user.id,
+          status:     filterStatus  || undefined,
+          methodType: filterMethod  || undefined,
+          dateFrom:   filterDateFrom || undefined,
+          dateTo:     filterDateTo   || undefined,
+        }),
         fetchMyInProgressContracts(user.id),
+        listMyPaymentMethods(),
       ]);
       if (pRes.error) throw pRes.error;
       if (cRes.error) throw cRes.error;
       setPayments(pRes.data ?? []);
       setInProgress(cRes.data ?? []);
+      setSavedMethods(mRes.data ?? []);
+      initialLoaded.current = true;
     } catch (err) {
       setError(err?.message || "Failed to load payments.");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [user?.id, filterStatus, filterMethod, filterDateFrom, filterDateTo]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Reset pagination when filters change so users see the top of the new set.
+  useEffect(() => {
+    setPageSize(HISTORY_PAGE_SIZE);
+  }, [filterStatus, filterMethod, filterDateFrom, filterDateTo]);
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const totalPaidCents = useMemo(
@@ -138,7 +191,6 @@ export default function MyPayments() {
     [payments]
   );
 
-  // Sort actionable contracts so the tenant sees the most urgent CTA first.
   const actionableContracts = useMemo(
     () => [...inProgress].sort(
       (a, b) => (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99)
@@ -157,154 +209,437 @@ export default function MyPayments() {
       0
     );
 
-  const hasDue = totalDue > 0;
-  const hasAnyContract = actionableContracts.length > 0 || payments.length > 0;
+  const hasFilter = !!(filterStatus || filterMethod || filterDateFrom || filterDateTo);
+  const hasAnyContract = actionableContracts.length > 0 || hasAnyPaymentEver;
+  const visiblePayments = useMemo(
+    () => payments.slice(0, pageSize),
+    [payments, pageSize]
+  );
+
+  const refreshMethods = useCallback(async () => {
+    const res = await listMyPaymentMethods();
+    setSavedMethods(res.data ?? []);
+  }, []);
+
+  const handleSetDefault = async (id) => {
+    setBusyMethodId(id);
+    await setDefaultPaymentMethod(id);
+    await refreshMethods();
+    setBusyMethodId(null);
+  };
+
+  const handleDeleteMethod = async (id) => {
+    setBusyMethodId(id);
+    await deletePaymentMethod(id);
+    await refreshMethods();
+    setBusyMethodId(null);
+  };
 
   // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
-        <Loader2 className="animate-spin" size={32} color={ORANGE} />
+      <div className="w-full min-h-screen flex items-center justify-center bg-vxr-bg">
+        <Loader2 className="animate-spin text-vxr-accent" size={32} />
       </div>
     );
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-  return (
-    <div className="min-h-screen bg-white" style={{ color: INK }}>
-      {/* Header */}
-      <header className="h-14 border-b flex items-center px-4 gap-3 bg-white sticky top-0 z-20"
-              style={{ borderColor: BORDER }}>
-        <button onClick={() => navigate(-1)} className="p-2 -ml-2 rounded-lg hover:bg-slate-100" aria-label="Back">
-          <ArrowLeft size={20} />
-        </button>
-        <h1 className="text-lg font-bold flex-1">Payments</h1>
-        <button onClick={() => refresh({ silent: true })}
-                disabled={refreshing}
-                className="p-2 rounded-lg hover:bg-slate-100 disabled:opacity-50"
-                aria-label="Refresh">
-          <RefreshCw size={18} className={refreshing ? "animate-spin" : ""} />
-        </button>
-        {isAuthenticated && (
-          <div className="relative">
-            <button
-              onClick={() => setDropdownOpen((o) => !o)}
-              className="flex items-center gap-1.5 rounded-full pl-1.5 pr-3 py-1"
-              style={{ background: LIGHT_OR }}
-            >
-              <div className="w-7 h-7 rounded-full flex items-center justify-center font-bold text-sm text-white"
-                   style={{ background: ORANGE }}>
-                {initial}
-              </div>
-              <span className="text-[11px]" style={{ color: ORANGE }}>▾</span>
-            </button>
-            {dropdownOpen && <ProfileDropdown />}
-          </div>
-        )}
-      </header>
+  const tabs = [
+    { id: "overview", label: "Overview" },
+    { id: "history",  label: `History${payments.length ? ` (${payments.length})` : ""}` },
+    { id: "methods",  label: `Methods${savedMethods.length ? ` (${savedMethods.length})` : ""}` },
+  ];
 
-      <main className="max-w-3xl mx-auto p-4 space-y-5">
+  return (
+    <div className="w-full min-h-screen bg-vxr-bg">
+      <AppHeader showBack />
+
+      <PageHero
+        eyebrow={payments.length ? `${payments.length} ${payments.length === 1 ? "payment" : "payments"} recorded` : undefined}
+        title="Payments"
+        subtitle="Track move-in dues, transaction history, and your saved methods."
+      >
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={RefreshCw}
+          onClick={() => refresh({ silent: true })}
+          disabled={refreshing}
+          className={refreshing ? "[&_svg]:animate-spin" : ""}
+        >
+          Refresh
+        </Button>
+      </PageHero>
+
+      <div className="w-full max-w-5xl mx-auto px-4 pt-4">
+        <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+      </div>
+
+      <main className="max-w-5xl mx-auto p-4 pt-5 space-y-5">
         {error && (
-          <div className="rounded-xl border p-3 text-sm"
-               style={{ borderColor: `${DANGER}55`, background: "#FFEBEE", color: DANGER }}>
+          <div className="rounded-vxr-md border border-vxr-danger/30 bg-vxr-danger-soft text-vxr-danger text-sm px-4 py-3">
             {error}
           </div>
         )}
 
-        {/* ── Summary banner ── */}
-        <SummaryBanner
-          actionable={actionableContracts}
-          totalDue={totalDue}
-          hasAnyContract={hasAnyContract}
-          onBrowse={() => navigate("/home2")}
-        />
-
-        {/* ── Totals Row ── */}
-        <section className="grid grid-cols-2 gap-3">
-          <StatCard
-            label="Total Paid"
-            value={PHP(totalPaid)}
-            color={SUCCESS}
-            sub={payments.length ? `${payments.length} ${payments.length === 1 ? "transaction" : "transactions"}` : "All completed payments"}
+        {activeTab === "overview" && (
+          <OverviewTab
+            actionable={actionableContracts}
+            totalDue={totalDue}
+            totalPaid={totalPaid}
+            pendingCount={pendingCount}
+            paymentsCount={payments.length}
+            hasAnyContract={hasAnyContract}
+            onBrowse={() => navigate("/home2")}
+            onContractAction={(href) => navigate(href)}
+            onGoToMethods={() => setActiveTab("methods")}
           />
-          <StatCard
-            label={pendingCount > 0 ? "Pending Charges" : "Amount Due"}
-            value={pendingCount > 0
-              ? `${pendingCount} ${pendingCount === 1 ? "payment" : "payments"}`
-              : PHP(totalDue)}
-            color={hasDue || pendingCount > 0 ? ORANGE : SUCCESS}
-            sub={hasDue
-              ? `${actionableContracts.filter((c) => c.status === "fully_signed").length} contract${actionableContracts.filter((c) => c.status === "fully_signed").length === 1 ? "" : "s"} ready`
-              : pendingCount > 0
-                ? "Processing"
-                : "Nothing pending"}
-          />
-        </section>
-
-        {/* ── Per-contract action cards ── */}
-        {actionableContracts.length > 0 && (
-          <section className="space-y-3">
-            {actionableContracts.map((c) => (
-              <ContractActionCard
-                key={c.id}
-                contract={c}
-                onAction={(href) => navigate(href)}
-              />
-            ))}
-          </section>
         )}
 
-        {/* ── Payment Method ── */}
-        <section className="rounded-xl border p-4 flex items-center gap-3"
-                 style={{ borderColor: BORDER }}>
-          <div className="rounded-lg p-2.5" style={{ background: LIGHT_OR }}>
-            <CreditCard size={22} color={ORANGE} />
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium" style={{ color: MUTED }}>Payment Method</p>
-            <p className="text-base font-bold truncate">Card via Stripe</p>
-            <p className="text-xs" style={{ color: MUTED }}>Sandbox — test cards only</p>
-          </div>
+        {activeTab === "history" && (
+          <HistoryTab
+            payments={payments}
+            visiblePayments={visiblePayments}
+            pageSize={pageSize}
+            onLoadMore={() => setPageSize((s) => s + HISTORY_PAGE_SIZE)}
+            filterStatus={filterStatus}     setFilterStatus={setFilterStatus}
+            filterMethod={filterMethod}     setFilterMethod={setFilterMethod}
+            filterDateFrom={filterDateFrom} setFilterDateFrom={setFilterDateFrom}
+            filterDateTo={filterDateTo}     setFilterDateTo={setFilterDateTo}
+            hasFilter={hasFilter}
+            hasAnyPaymentEver={hasAnyPaymentEver}
+            onOpenContract={(id) => navigate(`/contract/${id}`)}
+            onBrowse={() => navigate("/home2")}
+          />
+        )}
+
+        {activeTab === "methods" && (
+          <MethodsTab
+            methods={savedMethods}
+            busyId={busyMethodId}
+            onAdd={() => setAddOpen(true)}
+            onSetDefault={handleSetDefault}
+            onDelete={handleDeleteMethod}
+          />
+        )}
+      </main>
+
+      <AddPaymentMethodModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={() => { setAddOpen(false); refreshMethods(); }}
+      />
+
+      <Footer />
+    </div>
+  );
+}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+
+function OverviewTab({
+  actionable, totalDue, totalPaid, pendingCount, paymentsCount,
+  hasAnyContract, onBrowse, onContractAction, onGoToMethods,
+}) {
+  return (
+    <div className="space-y-5">
+      <SummaryBanner
+        actionable={actionable}
+        totalDue={totalDue}
+        hasAnyContract={hasAnyContract}
+        onBrowse={onBrowse}
+      />
+
+      <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Stat
+          label="Total paid"
+          value={PHP(totalPaid)}
+          icon={CheckCircle2}
+        />
+        <Stat
+          label={totalDue > 0 ? "Outstanding" : "Pending charges"}
+          value={
+            totalDue > 0
+              ? PHP(totalDue)
+              : `${pendingCount} ${pendingCount === 1 ? "payment" : "payments"}`
+          }
+          icon={totalDue > 0 ? BellRing : Hourglass}
+        />
+        <Stat
+          label="Transactions"
+          value={String(paymentsCount)}
+          icon={Receipt}
+        />
+      </section>
+
+      {actionable.length > 0 ? (
+        <section className="space-y-3">
+          <h2 className="font-display text-sm font-bold text-vxr-text uppercase tracking-wider">
+            Action needed
+          </h2>
+          {actionable.map((c) => (
+            <ContractActionCard
+              key={c.id}
+              contract={c}
+              onAction={onContractAction}
+            />
+          ))}
         </section>
+      ) : !hasAnyContract ? (
+        <Card className="p-2">
+          <EmptyState
+            icon={Search}
+            title="No active rentals yet"
+            message="Browse listings and apply — once a landlord approves and both of you sign, payment unlocks here."
+            action={
+              <Button variant="primary" icon={Home} onClick={onBrowse}>
+                Browse listings
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <Card className="p-2">
+          <EmptyState
+            icon={CheckCircle2}
+            title="All caught up"
+            message="No pending actions. Your past payments are in the History tab."
+            action={
+              <Button variant="secondary" onClick={onGoToMethods}>
+                Manage payment methods
+              </Button>
+            }
+          />
+        </Card>
+      )}
+    </div>
+  );
+}
 
-        {/* ── Transaction History ── */}
-        <section className="rounded-xl border p-4" style={{ borderColor: BORDER }}>
-          <div className="flex items-center gap-2 mb-1">
-            <Receipt size={18} color={INK} />
-            <h2 className="text-lg font-bold">Transaction History</h2>
+function HistoryTab({
+  payments, visiblePayments, pageSize, onLoadMore,
+  filterStatus, setFilterStatus,
+  filterMethod, setFilterMethod,
+  filterDateFrom, setFilterDateFrom,
+  filterDateTo, setFilterDateTo,
+  hasFilter, hasAnyPaymentEver, onOpenContract, onBrowse,
+}) {
+  const clearFilters = () => {
+    setFilterStatus("");
+    setFilterMethod("");
+    setFilterDateFrom("");
+    setFilterDateTo("");
+  };
+
+  const showingMore = payments.length > pageSize;
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Filter size={14} className="text-vxr-text-sub" />
+          <span className="font-display text-[11px] font-bold uppercase tracking-wider text-vxr-text-sub">
+            Filter
+          </span>
+          {hasFilter && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="ml-auto font-body text-xs font-semibold text-vxr-accent hover:underline"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <FilterSelect value={filterStatus} onChange={setFilterStatus} options={STATUS_FILTERS} />
+          <FilterSelect value={filterMethod} onChange={setFilterMethod} options={METHOD_FILTERS} />
+          <FilterDate value={filterDateFrom} onChange={setFilterDateFrom} aria="From" />
+          <FilterDate value={filterDateTo}   onChange={setFilterDateTo}   aria="To" />
+        </div>
+      </Card>
+
+      {payments.length === 0 ? (
+        hasFilter ? (
+          <Card className="p-2">
+            <EmptyState
+              icon={Filter}
+              title="No matches for these filters"
+              message="Try widening the date range or clearing one of the filters above."
+              action={<Button variant="secondary" onClick={clearFilters}>Clear filters</Button>}
+            />
+          </Card>
+        ) : (
+          <Card className="p-2">
+            <EmptyState
+              icon={Receipt}
+              title={hasAnyPaymentEver ? "No payments in this view" : "No payments yet"}
+              message={
+                hasAnyPaymentEver
+                  ? "Your history exists — try clearing filters or pulling a wider date range."
+                  : "Once you pay your first move-in, every charge will land here."
+              }
+              action={
+                !hasAnyPaymentEver && (
+                  <Button variant="primary" icon={Home} onClick={onBrowse}>
+                    Browse listings
+                  </Button>
+                )
+              }
+            />
+          </Card>
+        )
+      ) : (
+        <Card className="overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-vxr-border bg-vxr-surface2/50">
+            <p className="font-body text-xs text-vxr-text-sub">
+              Showing <span className="font-bold text-vxr-text">{visiblePayments.length}</span>
+              {" "}of <span className="font-bold text-vxr-text">{payments.length}</span>
+              {hasFilter ? " filtered " : " "}
+              {payments.length === 1 ? "payment" : "payments"}
+            </p>
           </div>
-          <p className="text-sm mb-4" style={{ color: MUTED }}>
-            All recorded payments on your account
-          </p>
-
-          {payments.length === 0 ? (
-            <EmptyHistory hasContracts={actionableContracts.length > 0} onBrowse={() => navigate("/home2")} />
-          ) : (
-            <div className="overflow-x-auto">
-              <div
-                className="grid grid-cols-[2fr_3fr_2fr_2fr_auto] gap-2 px-2 py-3 text-[11px] font-bold rounded-lg mb-2"
-                style={{ background: "#F9FAFB", color: MUTED, border: `1px solid ${BORDER}` }}
-              >
-                <span>DATE</span>
-                <span>PROPERTY</span>
-                <span>AMOUNT</span>
-                <span>STATUS</span>
-                <span></span>
-              </div>
-              <div>
-                {payments.map((p, i) => (
-                  <TxRow
-                    key={p.id}
-                    payment={p}
-                    last={i === payments.length - 1}
-                    onOpen={() => p.contract_id && navigate(`/contract/${p.contract_id}`)}
-                  />
-                ))}
-              </div>
+          <ul>
+            {visiblePayments.map((p, i) => (
+              <TxRow
+                key={p.id}
+                payment={p}
+                last={i === visiblePayments.length - 1 && !showingMore}
+                onOpen={() => p.contract_id && onOpenContract(p.contract_id)}
+              />
+            ))}
+          </ul>
+          {showingMore && (
+            <div className="px-5 py-4 border-t border-vxr-border bg-vxr-surface2/30 flex justify-center">
+              <Button variant="secondary" size="sm" onClick={onLoadMore}>
+                Load more
+              </Button>
             </div>
           )}
-        </section>
-      </main>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function MethodsTab({ methods, busyId, onAdd, onSetDefault, onDelete }) {
+  const def = methods.find((m) => m.is_default) ?? methods[0];
+  const others = methods.filter((m) => m.id !== def?.id);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-display text-lg font-extrabold text-vxr-text tracking-tight">
+            Saved methods
+          </h2>
+          <p className="font-body text-sm text-vxr-text-sub mt-0.5">
+            Save GCash, Maya, GrabPay, or bank transfer for one-tap checkout.
+          </p>
+        </div>
+        <Button variant="primary" icon={PlusCircle} onClick={onAdd}>
+          Add method
+        </Button>
+      </div>
+
+      {methods.length === 0 ? (
+        <Card className="p-2">
+          <EmptyState
+            icon={CreditCard}
+            title="No saved payment methods"
+            message="Cards are entered fresh at checkout for security. Save a wallet or bank to skip the form next time."
+            action={
+              <Button variant="primary" icon={PlusCircle} onClick={onAdd}>
+                Add your first method
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <>
+          {def && (
+            <Card className="p-5">
+              <p className="font-body text-[11px] font-semibold uppercase tracking-wider text-vxr-text-sub mb-3">
+                Default
+              </p>
+              <div className="flex items-center gap-4">
+                <PaymentMethodIcon type={def.type} size="lg" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-display text-base font-bold text-vxr-text truncate">
+                      {def.label || METHOD_LABELS[def.type]?.label || def.type}
+                    </p>
+                    <Badge tone="success">Default</Badge>
+                    {def.is_mock && <Badge tone="info">Mock</Badge>}
+                  </div>
+                  <p className="font-body text-sm text-vxr-text-sub truncate mt-0.5">
+                    {def.account_hint || METHOD_LABELS[def.type]?.label || "Saved method"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busyId === def.id}
+                  onClick={() => onDelete(def.id)}
+                  className="p-2 rounded-vxr-md text-vxr-danger hover:bg-vxr-danger-soft disabled:opacity-50 transition-colors"
+                  aria-label="Delete default method"
+                  title="Delete"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </Card>
+          )}
+
+          {others.length > 0 && (
+            <Card className="overflow-hidden">
+              <p className="px-5 py-3 border-b border-vxr-border bg-vxr-surface2/50 font-body text-[11px] font-semibold uppercase tracking-wider text-vxr-text-sub">
+                Other saved methods
+              </p>
+              <ul>
+                {others.map((m, i) => (
+                  <li
+                    key={m.id}
+                    className={`flex items-center gap-4 px-5 py-3 ${i < others.length - 1 ? "border-b border-vxr-border" : ""}`}
+                  >
+                    <PaymentMethodIcon type={m.type} size="md" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-display text-sm font-bold text-vxr-text truncate">
+                          {m.label || METHOD_LABELS[m.type]?.label || m.type}
+                        </p>
+                        {m.is_mock && <Badge tone="info">Mock</Badge>}
+                      </div>
+                      {m.account_hint && (
+                        <p className="font-body text-xs text-vxr-text-sub truncate mt-0.5">
+                          {m.account_hint}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busyId === m.id}
+                      onClick={() => onSetDefault(m.id)}
+                      className="font-body text-xs font-semibold text-vxr-accent hover:underline disabled:opacity-50"
+                    >
+                      Set default
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyId === m.id}
+                      onClick={() => onDelete(m.id)}
+                      className="p-1.5 rounded-vxr-md text-vxr-danger hover:bg-vxr-danger-soft disabled:opacity-50 transition-colors"
+                      aria-label="Delete"
+                      title="Delete"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -312,42 +647,40 @@ export default function MyPayments() {
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function SummaryBanner({ actionable, totalDue, hasAnyContract, onBrowse }) {
-  // Decide what to surface in the top banner. Priority: ready-to-pay >
-  // signature-needed > waiting > all paid > no contracts at all.
-  const fullySigned = actionable.filter((c) => c.status === "fully_signed");
-  const awaitingMine = actionable.filter((c) => c.status === "awaiting_tenant");
+  // Priority surface: ready-to-pay > sign-needed > waiting > caught-up > none.
+  const fullySigned      = actionable.filter((c) => c.status === "fully_signed");
+  const awaitingTenant   = actionable.filter((c) => c.status === "awaiting_tenant");
   const awaitingLandlord = actionable.filter((c) => c.status === "awaiting_landlord");
 
   if (fullySigned.length > 0) {
     return (
       <Banner
-        icon={<BellRing size={20} color={ORANGE} />}
-        color={ORANGE}
-        bg={LIGHT_OR}
-        title={fullySigned.length === 1 ? "Upcoming Payment Reminder" : `${fullySigned.length} payments due`}
-        body={fullySigned.length === 1
-          ? `Your move-in payment of ${PHP(totalDue)} for ${fullySigned[0].listings?.title || "your rental"} is due now.`
-          : `You have ${fullySigned.length} contracts ready for move-in. Total due: ${PHP(totalDue)}.`}
+        tone="accent"
+        icon={BellRing}
+        title={fullySigned.length === 1 ? "Upcoming payment reminder" : `${fullySigned.length} payments due`}
+        body={
+          fullySigned.length === 1
+            ? `Your move-in payment of ${PHP(totalDue)} for ${fullySigned[0].listings?.title || "your rental"} is due now.`
+            : `You have ${fullySigned.length} contracts ready for move-in. Total due: ${PHP(totalDue)}.`
+        }
       />
     );
   }
-  if (awaitingMine.length > 0) {
+  if (awaitingTenant.length > 0) {
     return (
       <Banner
-        icon={<FileSignature size={20} color={ORANGE} />}
-        color={ORANGE}
-        bg={LIGHT_OR}
+        tone="warning"
+        icon={FileSignature}
         title="Action needed: sign your contract"
-        body={`You have ${awaitingMine.length} contract${awaitingMine.length === 1 ? "" : "s"} waiting for your signature before payment can begin.`}
+        body={`You have ${awaitingTenant.length} contract${awaitingTenant.length === 1 ? "" : "s"} waiting for your signature before payment can begin.`}
       />
     );
   }
   if (awaitingLandlord.length > 0) {
     return (
       <Banner
-        icon={<Hourglass size={20} color={INFO} />}
-        color={INFO}
-        bg={INFO_BG}
+        tone="info"
+        icon={Hourglass}
         title="Awaiting landlord countersignature"
         body={`${awaitingLandlord.length} contract${awaitingLandlord.length === 1 ? "" : "s"} waiting on the landlord. You'll be able to pay once they sign.`}
       />
@@ -356,9 +689,8 @@ function SummaryBanner({ actionable, totalDue, hasAnyContract, onBrowse }) {
   if (!hasAnyContract) {
     return (
       <Banner
-        icon={<Search size={20} color={INFO} />}
-        color={INFO}
-        bg={INFO_BG}
+        tone="info"
+        icon={Search}
         title="No active rentals yet"
         body="Browse listings and apply — once a landlord approves and both of you sign, payment unlocks here."
         actionLabel="Browse listings"
@@ -368,36 +700,40 @@ function SummaryBanner({ actionable, totalDue, hasAnyContract, onBrowse }) {
   }
   return (
     <Banner
-      icon={<CheckCircle2 size={20} color={SUCCESS} />}
-      color={SUCCESS}
-      bg={SUCCESS_BG}
+      tone="success"
+      icon={CheckCircle2}
       title="Up to date"
       body="No pending payments. You're all caught up."
     />
   );
 }
 
-function Banner({ icon, color, bg, title, body, actionLabel, onAction }) {
+const BANNER_TONES = {
+  accent:  { bg: "bg-vxr-accent-soft",  border: "border-vxr-accent/30",  text: "text-vxr-accent"  },
+  warning: { bg: "bg-vxr-warning-soft", border: "border-vxr-warning/30", text: "text-vxr-warning" },
+  info:    { bg: "bg-blue-50",          border: "border-blue-200",       text: "text-blue-600"    },
+  success: { bg: "bg-vxr-success-soft", border: "border-vxr-success/30", text: "text-vxr-success" },
+};
+
+function Banner({ tone, icon: Icon, title, body, actionLabel, onAction }) {
+  const t = BANNER_TONES[tone] ?? BANNER_TONES.info;
   return (
-    <section
-      className="rounded-xl p-4 border"
-      style={{ background: bg, borderColor: `${color}55` }}
-    >
-      <div className="flex items-center gap-2">
-        {icon}
-        <h2 className="text-base font-bold">{title}</h2>
+    <section className={`rounded-vxr p-4 border ${t.bg} ${t.border}`}>
+      <div className="flex items-center gap-2.5">
+        <Icon size={20} className={t.text} />
+        <h2 className="font-display text-base font-extrabold text-vxr-text tracking-tight">
+          {title}
+        </h2>
       </div>
-      <p className="text-sm mt-3 leading-relaxed" style={{ color: MUTED }}>
+      <p className="font-body text-sm mt-2 leading-relaxed text-vxr-text-sub">
         {body}
       </p>
       {actionLabel && onAction && (
-        <button
-          onClick={onAction}
-          className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-semibold"
-          style={{ background: color }}
-        >
-          {actionLabel}
-        </button>
+        <div className="mt-3">
+          <Button variant="primary" size="sm" onClick={onAction}>
+            {actionLabel}
+          </Button>
+        </div>
       )}
     </section>
   );
@@ -411,127 +747,151 @@ function ContractActionCard({ contract, onAction }) {
     Number(contract.security_deposit || 0) +
     Number(contract.advance_payment || 0);
   const title = contract.listings?.title || "Rental";
+  const { Icon } = cfg;
 
   return (
-    <div className="rounded-xl border p-4" style={{ borderColor: BORDER }}>
+    <Card className="p-5">
       <div className="flex items-start gap-3">
-        <div className="rounded-lg p-2.5 flex-shrink-0" style={{ background: cfg.bg }}>
-          <cfg.Icon size={20} color={cfg.color} />
+        <div className="w-11 h-11 rounded-vxr-md bg-vxr-accent-soft flex items-center justify-center shrink-0">
+          <Icon size={20} className="text-vxr-accent" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-base font-bold truncate">{cfg.title}</p>
-            <span
-              className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide"
-              style={{ background: `${cfg.color}1A`, color: cfg.color }}
-            >
-              {contract.status.replace("_", " ")}
-            </span>
+            <p className="font-display text-base font-extrabold text-vxr-text truncate">
+              {cfg.title}
+            </p>
+            <Badge tone={cfg.badge.tone}>{cfg.badge.label}</Badge>
           </div>
-          <p className="text-xs mt-0.5 truncate" style={{ color: MUTED }}>
+          <p className="font-body text-xs text-vxr-text-sub truncate mt-0.5">
             <Home size={11} className="inline -mt-0.5 mr-1" />
             {title}
           </p>
-          <p className="text-sm mt-2 leading-relaxed" style={{ color: MUTED }}>
+          <p className="font-body text-sm mt-2 leading-relaxed text-vxr-text-sub">
             {cfg.body}
           </p>
         </div>
       </div>
 
       {contract.status === "fully_signed" && total > 0 && (
-        <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-          <Mini label="First month"  value={PHP(contract.monthly_rent)} />
-          <Mini label="Deposit"      value={PHP(contract.security_deposit)} />
-          <Mini label="Advance"      value={PHP(contract.advance_payment)} />
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <Mini label="First month" value={PHP(contract.monthly_rent)} />
+          <Mini label="Deposit"     value={PHP(contract.security_deposit)} />
+          <Mini label="Advance"     value={PHP(contract.advance_payment)} />
         </div>
       )}
 
       <div className="mt-4 flex items-center justify-between gap-3">
         {contract.status === "fully_signed" && total > 0 ? (
-          <p className="text-sm font-bold" style={{ color: cfg.color }}>
-            Total due: {PHP(total)}
-          </p>
+          <div className="min-w-0">
+            <p className="font-body text-[11px] font-semibold uppercase tracking-wider text-vxr-text-sub">
+              Total due
+            </p>
+            <p className="font-display text-lg font-extrabold text-vxr-text">
+              {PHP(total)}
+            </p>
+          </div>
         ) : <span />}
-        <button
+        <Button
+          variant={cfg.variant}
+          iconRight={ChevronRight}
           onClick={() => onAction(cfg.go(contract.id))}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-semibold transition hover:opacity-90"
-          style={{ background: cfg.color }}
         >
           {cfg.cta}
-          <ChevronRight size={14} />
-        </button>
+        </Button>
       </div>
-    </div>
+    </Card>
   );
 }
 
 function Mini({ label, value }) {
   return (
-    <div className="rounded-lg p-2" style={{ background: "#F9FAFB", border: `1px solid ${BORDER}` }}>
-      <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: MUTED }}>{label}</p>
-      <p className="text-xs font-bold mt-0.5">{value}</p>
-    </div>
-  );
-}
-
-function StatCard({ label, value, color, sub }) {
-  return (
-    <div className="rounded-xl border p-4" style={{ borderColor: BORDER }}>
-      <p className="text-sm font-medium" style={{ color: MUTED }}>{label}</p>
-      <p className="text-2xl font-bold mt-2" style={{ color }}>{value}</p>
-      <p className="text-xs mt-1" style={{ color: MUTED }}>{sub}</p>
+    <div className="rounded-vxr-sm px-3 py-2 bg-vxr-surface2 border border-vxr-border">
+      <p className="font-body text-[10px] font-semibold uppercase tracking-wider text-vxr-text-sub">
+        {label}
+      </p>
+      <p className="font-display text-sm font-bold text-vxr-text mt-0.5 truncate">
+        {value}
+      </p>
     </div>
   );
 }
 
 function TxRow({ payment, last, onOpen }) {
   const status = (payment.status ?? "succeeded").toLowerCase();
-  const statusColor = STATUS_COLOR[status] ?? DANGER;
+  const badge = STATUS_BADGE[status] ?? STATUS_BADGE.failed;
   const cents = Number(payment.amount_cents) || 0;
   const title = payment.contract?.listings?.title || "Listing";
   const clickable = !!payment.contract_id;
+
+  // Legacy Stripe rows have no method_type — they predate the ledger.
+  const methodLabel = payment.method_type
+    ? `${METHOD_LABELS[payment.method_type]?.short ?? payment.method_type}${payment.last4 ? ` ••${payment.last4}` : ""}`
+    : "Card (legacy)";
+
   return (
-    <button
-      type="button"
-      onClick={clickable ? onOpen : undefined}
-      disabled={!clickable}
-      className={`grid grid-cols-[2fr_3fr_2fr_2fr_auto] gap-2 items-center px-2 py-3 text-xs w-full text-left ${clickable ? "hover:bg-slate-50 cursor-pointer" : "cursor-default"}`}
-      style={{ borderBottom: last ? "none" : `1px solid ${BORDER}`, color: INK }}
-    >
-      <span>{fmtDate(payment.paid_at)}</span>
-      <span className="truncate">{title}</span>
-      <span className="font-semibold">{PHP(cents / 100)}</span>
-      <span className="font-semibold capitalize" style={{ color: statusColor }}>
-        {status}
-      </span>
-      <span className="text-slate-300">
-        {clickable ? <ChevronRight size={14} /> : null}
-      </span>
-    </button>
+    <li>
+      <button
+        type="button"
+        onClick={clickable ? onOpen : undefined}
+        disabled={!clickable}
+        className={`w-full flex items-center gap-3 px-5 py-3.5 text-left transition-colors ${
+          clickable ? "hover:bg-vxr-surface2/60 cursor-pointer" : "cursor-default"
+        } ${last ? "" : "border-b border-vxr-border"}`}
+      >
+        <span className="text-vxr-text-sub">
+          <PaymentMethodIcon
+            type={payment.method_type || "card"}
+            variant="bare"
+            size="md"
+          />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-display text-sm font-bold text-vxr-text truncate">
+            {title}
+          </p>
+          <p className="font-body text-xs text-vxr-text-sub truncate">
+            {fmtDate(payment.paid_at)} · {methodLabel}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="font-mono text-sm font-bold text-vxr-text tabular-nums">
+            {PHP(cents / 100)}
+          </p>
+          <div className="mt-1 flex justify-end">
+            <Badge tone={badge.tone}>{badge.label}</Badge>
+          </div>
+        </div>
+        <span className="text-vxr-text-muted shrink-0">
+          {clickable ? <ChevronRight size={16} /> : null}
+        </span>
+      </button>
+    </li>
   );
 }
 
-function EmptyHistory({ hasContracts, onBrowse }) {
+function FilterSelect({ value, onChange, options }) {
   return (
-    <div className="text-center py-8">
-      <Receipt size={28} className="mx-auto" color={MUTED} />
-      <p className="text-sm font-semibold mt-2" style={{ color: INK }}>
-        No payments yet
-      </p>
-      <p className="text-xs mt-1" style={{ color: MUTED }}>
-        {hasContracts
-          ? "Complete the action above to record your first payment."
-          : "Once you pay your first move-in, it will appear here."}
-      </p>
-      {!hasContracts && (
-        <button
-          onClick={onBrowse}
-          className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-semibold"
-          style={{ background: ORANGE }}
-        >
-          Browse listings
-        </button>
-      )}
-    </div>
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md px-3 py-2.5 font-body text-sm text-vxr-text focus:outline-none focus:border-vxr-accent transition-colors"
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  );
+}
+
+function FilterDate({ value, onChange, aria }) {
+  return (
+    <input
+      type="date"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label={aria}
+      placeholder={aria}
+      className="w-full bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md px-3 py-2.5 font-body text-sm text-vxr-text focus:outline-none focus:border-vxr-accent transition-colors"
+    />
   );
 }

@@ -87,7 +87,10 @@ export async function verifyPhoneOtp(phone, token) {
     "verify phone OTP"
   );
   if (error) throw error;
-  await updateMyProfile({ is_verified: true });
+  // NOTE: profiles.is_verified is reserved for IDENTITY verification (the
+  // AI-driven flow). Phone-verified state is reflected by Supabase via
+  // auth.users.phone_confirmed_at, which is populated automatically on a
+  // successful verifyOtp() — no profile write needed here.
 }
 
 export async function hasUserListings(userId) {

@@ -65,7 +65,7 @@ export default function ImageLightbox({ images, index, onClose, onNavigate }) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex flex-col bg-black/95 backdrop-blur-sm animate-fadeIn"
+      className="fixed inset-0 z-[100] flex flex-col bg-vxr-text/95 backdrop-blur-sm"
       onClick={onClose}
       role="dialog"
       aria-modal="true"

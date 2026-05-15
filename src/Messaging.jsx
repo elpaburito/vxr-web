@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Home, Bell, ArrowLeft, Search, Send, Paperclip, Smile,
+  ArrowLeft, Search, Send, Paperclip, Smile,
   MoreVertical, Check, CheckCheck, MessageCircle,
   Loader2, FileText,
 } from "lucide-react";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import AppHeader from "./components/AppHeader.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import {
   fetchConversations, fetchMessages, fetchUnreadCounts,
@@ -28,8 +28,7 @@ function formatTime(iso) {
 export default function Messaging() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { user, profile, isAuthenticated } = useAuth();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const { user, isAuthenticated } = useAuth();
   const [conversations, setConversations] = useState([]);
   const [unreadMap, setUnreadMap] = useState(new Map());
   const [convsLoading, setConvsLoading] = useState(true);
@@ -41,8 +40,6 @@ export default function Messaging() {
   const [sending, setSending] = useState(false);
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
-
-  const initial = (profile?.full_name || user?.email || "?").charAt(0).toUpperCase();
 
   // --- load conversations + unread counts ---
   const loadConversations = useCallback(async () => {
@@ -216,14 +213,8 @@ export default function Messaging() {
     }));
 
   return (
-    <div className="w-full min-h-screen bg-gray-100 flex flex-col">
-      <Header
-        navigate={navigate}
-        dropdownOpen={dropdownOpen}
-        setDropdownOpen={setDropdownOpen}
-        initial={initial}
-        isAuthenticated={isAuthenticated}
-      />
+    <div className="w-full min-h-screen bg-vxr-bg flex flex-col">
+      <AppHeader showBack />
 
       <div className="flex-1 flex max-w-[80rem] w-full mx-auto px-4 lg:px-6 py-6">
         <div className="flex-1 flex bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -249,7 +240,7 @@ export default function Messaging() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search conversations"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-full pl-9 pr-3 py-2 text-sm placeholder-slate-400 outline-none focus:border-[#EC6138] focus:bg-white transition"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-full pl-9 pr-3 py-2 text-sm placeholder-slate-400 outline-none focus:border-vxr-accent focus:bg-white transition"
                 />
               </div>
             </div>
@@ -318,7 +309,7 @@ function ConversationRow({ conv, active, onClick }) {
       }`}
     >
       <div className="relative flex-shrink-0">
-        <div className="w-11 h-11 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white font-semibold flex items-center justify-center text-sm shadow-sm overflow-hidden">
+        <div className="w-11 h-11 rounded-full bg-gradient-to-br bg-vxr-gradient text-white font-semibold flex items-center justify-center text-sm shadow-sm overflow-hidden">
           {conv.avatar ? (
             <img src={conv.avatar} alt={conv.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />
           ) : initials}
@@ -355,8 +346,8 @@ function ConversationRow({ conv, active, onClick }) {
 function EmptyState() {
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center px-6 text-slate-400">
-      <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#EC6138]/10 to-[#FF8E9E]/10 flex items-center justify-center mb-4">
-        <MessageCircle size={28} className="text-[#EC6138]" />
+      <div className="w-16 h-16 rounded-full bg-vxr-accent-soft flex items-center justify-center mb-4">
+        <MessageCircle size={28} className="text-vxr-accent" />
       </div>
       <p className="text-sm">Select a conversation to start messaging</p>
     </div>
@@ -371,7 +362,7 @@ function ChatThread({ conv, messages, msgsLoading, draft, setDraft, onSend, onAt
       <div className="px-5 py-3 bg-white border-b border-gray-100 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="relative">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#EC6138] to-[#FF8E9E] text-white font-semibold flex items-center justify-center text-sm overflow-hidden">
+            <div className="w-10 h-10 rounded-full bg-gradient-to-br bg-vxr-gradient text-white font-semibold flex items-center justify-center text-sm overflow-hidden">
               {conv.avatar ? (
                 <img src={conv.avatar} alt={conv.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />
               ) : initials}
@@ -428,7 +419,7 @@ function ChatThread({ conv, messages, msgsLoading, draft, setDraft, onSend, onAt
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Write a message..."
-            className="w-full bg-slate-50 border border-slate-200 rounded-full px-4 py-2.5 pr-10 text-sm placeholder-slate-400 outline-none focus:border-[#EC6138] focus:bg-white transition"
+            className="w-full bg-slate-50 border border-slate-200 rounded-full px-4 py-2.5 pr-10 text-sm placeholder-slate-400 outline-none focus:border-vxr-accent focus:bg-white transition"
           />
           <button
             type="button"
@@ -442,7 +433,7 @@ function ChatThread({ conv, messages, msgsLoading, draft, setDraft, onSend, onAt
           type="submit"
           disabled={!draft.trim() || sending}
           className="w-10 h-10 rounded-full text-white flex items-center justify-center transition disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+          style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
           aria-label="Send"
         >
           {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
@@ -472,7 +463,7 @@ function MessageBody({ m, mine }) {
         rel="noreferrer"
         className={`flex items-center gap-2 ${mine ? "text-white" : "text-slate-800"}`}
       >
-        <FileText size={18} className={mine ? "text-white" : "text-[#EC6138]"} />
+        <FileText size={18} className={mine ? "text-white" : "text-vxr-accent"} />
         <div className="min-w-0">
           <p className="text-sm font-semibold truncate">{m.fileName || "Attachment"}</p>
           <p className={`text-[11px] ${mine ? "text-white/80" : "text-slate-500"}`}>Tap to open</p>
@@ -490,14 +481,14 @@ function MessageBubble({ m }) {
         <div className="max-w-[70%]">
           <div
             className="rounded-2xl rounded-br-sm px-4 py-2 text-sm text-white shadow-sm"
-            style={{ background: "linear-gradient(135deg, #EC6138, #FF8E9E)" }}
+            style={{ background: "linear-gradient(135deg, #FF7043, #FF8A80)" }}
           >
             <MessageBody m={m} mine={true} />
           </div>
           <div className="text-[10px] text-slate-400 mt-1 mr-1 flex items-center gap-1 justify-end">
             {m.time}
             {m.read ? (
-              <CheckCheck size={11} className="text-[#EC6138]" />
+              <CheckCheck size={11} className="text-vxr-accent" />
             ) : (
               <Check size={11} />
             )}
@@ -530,79 +521,3 @@ function IconBtn({ children, ...props }) {
   );
 }
 
-function Header({ navigate, dropdownOpen, setDropdownOpen, initial, isAuthenticated }) {
-  return (
-    <nav
-      className="sticky top-0 z-50"
-      style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-      onClick={() => setDropdownOpen(false)}
-    >
-      <div
-        style={{ width: "100%", padding: "10px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shadow-sm">
-            <span className="font-black text-lg" style={{ color: "#e8756a" }}>V</span>
-          </div>
-          <span className="font-bold text-white text-lg tracking-wide">ViewxRent</span>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
-          <button
-            onClick={() => navigate("/home2")}
-            style={{
-              background: "none", border: "none", cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", padding: 4,
-            }}
-          >
-            <Home size={22} color="white" />
-          </button>
-
-          <button style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            padding: 4, position: "relative",
-          }}>
-            <Bell size={22} color="white" />
-            <span style={{
-              position: "absolute", top: 2, right: 2,
-              width: 8, height: 8, borderRadius: "50%",
-              background: "#ff3b30", border: "1.5px solid #f0a090",
-            }} />
-          </button>
-
-          {isAuthenticated && (
-            <button
-              onClick={() => setDropdownOpen(!dropdownOpen)}
-              style={{
-                display: "flex", alignItems: "center", gap: 8,
-                background: "white", border: "none", cursor: "pointer",
-                borderRadius: 999, padding: "5px 14px 5px 6px",
-                boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-              }}
-            >
-              <div style={{
-                width: 34, height: 34, borderRadius: "50%",
-                background: "linear-gradient(135deg, #EC6138, #FF8E9E)",
-                color: "white", fontWeight: 700,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 14,
-              }}>
-                {initial}
-              </div>
-              <div style={{
-                width: 0, height: 0,
-                borderLeft: "6px solid transparent",
-                borderRight: "6px solid transparent",
-                borderTop: "8px solid #222",
-              }} />
-            </button>
-          )}
-
-          {dropdownOpen && <ProfileDropdown />}
-        </div>
-      </div>
-    </nav>
-  );
-}

@@ -1,6 +1,5 @@
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import App from "./App";
-import HomePage from "./HomePage.jsx";
 import HomePage2 from "./HomePage2.jsx";
 import LoginPage from "./Loginpage.jsx";
 import ProfilePage from "./ProfilePage.jsx";
@@ -25,16 +24,17 @@ import RelistPrompt from "./RelistPrompt.jsx";
 import { ListingsProvider } from "./context/ListingsContext.jsx";
 import { WishlistProvider } from "./context/WishlistContext.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
+import { NotificationProvider } from "./context/NotificationContext.jsx";
 
 function AppRouter() {
   return (
     <Router>
       <AuthProvider>
-        <ListingsProvider>
-          <WishlistProvider>
-            <Routes>
+        <NotificationProvider>
+          <ListingsProvider>
+            <WishlistProvider>
+              <Routes>
               <Route path="/" element={<App />} />
-              <Route path="/home" element={<HomePage />} />
               <Route path="/home2" element={<HomePage2 />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/profile" element={<ProfilePage />} />
@@ -56,9 +56,10 @@ function AppRouter() {
               <Route path="/my-payments" element={<MyPayments />} />
               <Route path="/admin" element={<AdminDashboard />} />
               <Route path="/admin/cms" element={<AdminCMS />} />
-            </Routes>
-          </WishlistProvider>
-        </ListingsProvider>
+              </Routes>
+            </WishlistProvider>
+          </ListingsProvider>
+        </NotificationProvider>
       </AuthProvider>
     </Router>
   );

@@ -106,10 +106,11 @@ export async function updateReportStatus(reportId, newStatus) {
  */
 export async function respondToReport(reportId, response) {
   if (!reportId) return { error: new Error("Missing reportId") };
+  const trimmed = response?.trim() ?? null;
   const { error } = await supabase
     .from(TABLE)
     .update({
-      landlord_response:    response?.trim() ?? null,
+      landlord_response:    trimmed,
       landlord_responded_at: new Date().toISOString(),
       updated_at:           new Date().toISOString(),
     })

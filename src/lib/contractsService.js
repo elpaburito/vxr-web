@@ -33,11 +33,13 @@ export function normalizeContract(row) {
       }
     : null;
 
-  // Payment comes from joined `payment` table (array → first row)
+  // Payment comes from joined `payment` table (array → first row).
+  // During the dual-column transition, prefer the PayMongo id; fall
+  // back to the legacy Stripe id for historical payments.
   const paymentRow = Array.isArray(row.payment) ? row.payment[0] : row.payment ?? null;
   const payment = paymentRow
     ? {
-        transactionId: paymentRow.stripe_payment_intent_id,
+        transactionId: paymentRow.paymongo_payment_intent_id ?? paymentRow.stripe_payment_intent_id,
         amount:        (paymentRow.amount_cents ?? 0) / 100,
         method:        paymentRow.method ?? paymentRow.payment_method_label ?? "card",
         last4:         paymentRow.last4 ?? "",
@@ -254,7 +256,7 @@ export async function fetchMyActiveContract(tenantId) {
       .limit(1),
     supabase
       .from("payment")
-      .select("paid_at, amount_cents, method, last4, name, stripe_payment_intent_id")
+      .select("paid_at, amount_cents, method, last4, name, stripe_payment_intent_id, paymongo_payment_intent_id")
       .eq("contract_id", contractRow.id)
       .order("paid_at", { ascending: false })
       .limit(1),
@@ -425,7 +427,7 @@ export async function signContract(contractId, role, signerName, signatureDataUr
   // First fetch current state to decide next status
   const { data: current } = await supabase
     .from(TABLE)
-    .select("tenant_signature, landlord_signature")
+    .select("tenant_signature, landlord_signature, tenant_id, landlord_id")
     .eq("id", contractId)
     .maybeSingle();
 
@@ -445,6 +447,7 @@ export async function signContract(contractId, role, signerName, signatureDataUr
     .eq("id", contractId)
     .select("*")
     .single();
+
   return { data, error };
 }
 
@@ -455,15 +458,16 @@ export async function signContract(contractId, role, signerName, signatureDataUr
 export async function recordContractPayment(contractId, paymentData) {
   const amountCents = Math.round((paymentData.amount ?? 0) * 100);
   const { error: payErr } = await supabase.from("payment").insert({
-    contract_id:              contractId,
-    stripe_payment_intent_id: paymentData.transactionId,
-    amount_cents:             amountCents > 0 ? amountCents : 1,
-    currency:                 "php",
-    status:                   "succeeded",
-    paid_at:                  paymentData.paidAt ?? new Date().toISOString(),
-    method:                   paymentData.method ?? "card",
-    last4:                    paymentData.last4 ?? null,
-    name:                     paymentData.name ?? null,
+    contract_id:                contractId,
+    stripe_payment_intent_id:   paymentData.transactionId,
+    paymongo_payment_intent_id: paymentData.transactionId,
+    amount_cents:               amountCents > 0 ? amountCents : 1,
+    currency:                   "php",
+    status:                     "succeeded",
+    paid_at:                    paymentData.paidAt ?? new Date().toISOString(),
+    method:                     paymentData.method ?? "card",
+    last4:                      paymentData.last4 ?? null,
+    name:                       paymentData.name ?? null,
   });
   if (payErr) return { error: payErr };
 

@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
-  MapPin, Home, Camera, Upload, Image as ImageIcon, ArrowLeft, X, Bell,
-  Loader2, AlertCircle, Locate, Crosshair, Search,
+  Camera, Upload, Image as ImageIcon, X,
+  Loader2, AlertCircle, Crosshair, Search,
 } from "lucide-react";
-import ProfileDropdown from "./components/ProfileDropdown.jsx";
+import AppHeader from "./components/AppHeader.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import {
   fetchListingById,
@@ -14,6 +14,7 @@ import {
   saveListingImageRecords,
   deleteListingImageRecord,
 } from "./lib/listingsService";
+import { Card, Button } from "./components/vxr";
 
 const DEFAULT_FORM = {
   title: "",
@@ -56,32 +57,32 @@ const AMENITIES = [
   "Balcony", "Water Tank",
 ];
 
+const INPUT_CLASS =
+  "w-full bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md px-3.5 py-3 font-body text-sm text-vxr-text placeholder:text-vxr-text-muted outline-none focus:border-vxr-accent transition-colors";
+
 export default function ListingDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, loading: authLoading } = useAuth();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   const queryParams = new URLSearchParams(location.search);
   const editId = queryParams.get("edit");
   const isEditMode = !!editId;
 
   const [formData, setFormData] = useState(DEFAULT_FORM);
-  const [existingImages, setExistingImages] = useState([]);  // [{id, url, is_cover}]
-  const [removedImageIds, setRemovedImageIds] = useState([]); // image record ids to delete on save
-  const [newImageFiles, setNewImageFiles] = useState([]);     // File[] for upload
-  const [newImagePreviews, setNewImagePreviews] = useState([]); // blob previews for unsaved
+  const [existingImages, setExistingImages] = useState([]);
+  const [removedImageIds, setRemovedImageIds] = useState([]);
+  const [newImageFiles, setNewImageFiles] = useState([]);
+  const [newImagePreviews, setNewImagePreviews] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [geoLoading, setGeoLoading] = useState(false);
 
-  // Redirect to login if unauthenticated
   useEffect(() => {
     if (!authLoading && !user) navigate("/login");
   }, [authLoading, user, navigate]);
 
-  // Load listing data when editing
   useEffect(() => {
     if (!editId) return;
     setLoading(true);
@@ -128,7 +129,6 @@ export default function ListingDashboard() {
     });
   }, [editId]);
 
-  // Revoke any blob preview URLs on unmount
   useEffect(() => {
     return () => newImagePreviews.forEach(URL.revokeObjectURL);
   }, [newImagePreviews]);
@@ -237,13 +237,11 @@ export default function ListingDashboard() {
 
     setSaving(true);
     try {
-      // 1. Upload any new image files to Supabase Storage → public URLs
       let newUrls = [];
       if (newImageFiles.length > 0) {
         newUrls = await uploadListingImages(user.id, newImageFiles);
       }
 
-      // 2. Compute cover photo URL (keep existing if present, otherwise first new upload)
       const existingCover = existingImages.find((i) => i.is_cover)?.url;
       const firstExisting = existingImages[0]?.url;
       const coverUrl = existingCover || firstExisting || newUrls[0] || null;
@@ -263,7 +261,6 @@ export default function ListingDashboard() {
         longitude: formData.longitude ? Number(formData.longitude) : undefined,
       };
 
-      // 3. Upsert the listing row
       let listingId = editId;
       if (isEditMode) {
         const { error } = await updateListing(editId, payload);
@@ -275,13 +272,11 @@ export default function ListingDashboard() {
         if (!listingId) throw new Error("Listing was created but no id returned");
       }
 
-      // 4. Delete any removed listing_image rows + their storage objects
       for (const recId of removedImageIds) {
         const rec = existingImages.find((i) => i.id === recId);
         await deleteListingImageRecord(recId, rec?.url);
       }
 
-      // 5. Insert listing_image rows for new uploads
       if (newUrls.length > 0) {
         const { error: imgErr } = await saveListingImageRecords({
           listingId,
@@ -302,11 +297,6 @@ export default function ListingDashboard() {
     }
   };
 
-  const handleLogout = () => {
-    setDropdownOpen(false);
-    navigate("/");
-  };
-
   const allPreviews = [
     ...existingImages.map((img) => ({ url: img.url, existing: true, recordId: img.id })),
     ...newImagePreviews.map((url, i) => ({ url, existing: false, index: i })),
@@ -314,24 +304,24 @@ export default function ListingDashboard() {
 
   if (authLoading || (isEditMode && loading)) {
     return (
-      <div className="w-full min-h-screen bg-gray-50 flex items-center justify-center text-gray-500 text-sm">
+      <div className="w-full min-h-screen bg-vxr-bg flex items-center justify-center font-body text-vxr-text-sub">
         <Loader2 className="animate-spin mr-2" size={18} /> Loading...
       </div>
     );
   }
 
   return (
-    <div className="w-[100%] min-h-[100vh] bg-gray-50">
-      <Header navigate={navigate} dropdownOpen={dropdownOpen} setDropdownOpen={setDropdownOpen} onLogout={handleLogout} />
+    <div className="w-full min-h-screen bg-vxr-bg">
+      <AppHeader showBack />
 
-      <div className="w-[100%] max-w-[64rem] mx-auto px-[1rem] py-[2rem]">
+      <div className="w-full max-w-5xl mx-auto px-4 py-8">
         <form onSubmit={handleSubmit}>
-          <h2 className="text-[2rem] font-semibold mb-6" style={{ color: "#e8756a" }}>
+          <h2 className="font-display text-3xl font-extrabold text-vxr-text tracking-tight mb-6">
             {isEditMode ? "Edit Listing" : "Create New Listing"}
           </h2>
 
           {error && (
-            <div className="mb-6 flex items-start gap-3 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-xl">
+            <div className="mb-6 flex items-start gap-3 bg-vxr-danger-soft border border-vxr-danger/20 text-vxr-danger font-body text-sm px-4 py-3 rounded-vxr-md">
               <AlertCircle size={18} className="mt-0.5 flex-shrink-0" />
               <div>
                 <div className="font-semibold">Error</div>
@@ -346,102 +336,110 @@ export default function ListingDashboard() {
           )}
 
           <div className="space-y-6">
-            {/* Listing Title */}
-            <Section title="Listing Title">
+            <FormSection title="Listing Title">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
+                  <label className="block font-body text-sm font-medium text-vxr-text mb-2">
+                    Status
+                  </label>
                   <div className="flex gap-6">
                     {[
                       { v: "active", l: "Active" },
                       { v: "draft", l: "Draft" },
                       { v: "rented", l: "Rented" },
                     ].map((o) => (
-                      <label key={o.v} className="flex items-center gap-2 text-sm">
+                      <label key={o.v} className="flex items-center gap-2 font-body text-sm">
                         <input
                           type="radio"
                           name="status"
                           value={o.v}
                           checked={formData.status === o.v}
                           onChange={handleChange}
-                          className="w-4 h-4"
-                          style={{ accentColor: "#e8756a" }}
+                          className="w-4 h-4 accent-vxr-accent"
                         />
                         {o.l}
                       </label>
                     ))}
                   </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Listing Title *</label>
+                <Field label="Listing Title *">
                   <input
                     type="text"
                     name="title"
                     value={formData.title}
                     onChange={handleChange}
                     placeholder="e.g., Modern Studio in Makati"
-                    className="w-full p-3 border border-gray-300 rounded-lg"
+                    className={INPUT_CLASS}
                     required
                   />
-                </div>
+                </Field>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Location */}
-            <Section title="Location Details">
+            <FormSection title="Location Details">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Field label="City">
-                  <input name="city" value={formData.city} onChange={handleChange} placeholder="e.g., Dasmariñas" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input name="city" value={formData.city} onChange={handleChange} placeholder="e.g., Dasmariñas" className={INPUT_CLASS} />
                 </Field>
                 <Field label="Province / Region">
-                  <input name="province" value={formData.province} onChange={handleChange} placeholder="e.g., Cavite" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input name="province" value={formData.province} onChange={handleChange} placeholder="e.g., Cavite" className={INPUT_CLASS} />
                 </Field>
                 <Field label="Barangay">
-                  <input name="barangay" value={formData.barangay} onChange={handleChange} placeholder="e.g., Salitran" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input name="barangay" value={formData.barangay} onChange={handleChange} placeholder="e.g., Salitran" className={INPUT_CLASS} />
                 </Field>
                 <Field label="Postal Code">
-                  <input name="postalCode" value={formData.postalCode} onChange={handleChange} placeholder="e.g., 4114" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input name="postalCode" value={formData.postalCode} onChange={handleChange} placeholder="e.g., 4114" className={INPUT_CLASS} />
                 </Field>
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Full Address</label>
-                  <input name="address" value={formData.address} onChange={handleChange} placeholder="Street, building, unit number…" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <Field label="Full Address">
+                    <input name="address" value={formData.address} onChange={handleChange} placeholder="Street, building, unit number…" className={INPUT_CLASS} />
+                  </Field>
                 </div>
               </div>
 
-              <div className="mt-5 border-t border-gray-100 pt-5">
-                <h4 className="font-medium mb-2 text-sm">Map coordinates</h4>
-                <p className="text-xs text-gray-500 mb-3">
+              <div className="mt-5 border-t border-vxr-border pt-5">
+                <h4 className="font-display font-bold mb-2 text-sm text-vxr-text">Map coordinates</h4>
+                <p className="font-body text-xs text-vxr-text-sub mb-3">
                   Required for this listing to show on the map. Enter manually or use auto-locate.
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <Field label="Latitude">
-                    <input type="number" step="any" name="latitude" value={formData.latitude} onChange={handleChange} placeholder="14.329567" className="w-full p-3 border border-gray-300 rounded-lg" />
+                    <input type="number" step="any" name="latitude" value={formData.latitude} onChange={handleChange} placeholder="14.329567" className={INPUT_CLASS} />
                   </Field>
                   <Field label="Longitude">
-                    <input type="number" step="any" name="longitude" value={formData.longitude} onChange={handleChange} placeholder="120.933433" className="w-full p-3 border border-gray-300 rounded-lg" />
+                    <input type="number" step="any" name="longitude" value={formData.longitude} onChange={handleChange} placeholder="120.933433" className={INPUT_CLASS} />
                   </Field>
                   <div className="flex gap-2 items-end">
-                    <button type="button" onClick={useCurrentLocation} disabled={geoLoading}
-                      className="flex-1 flex items-center justify-center gap-1.5 p-3 text-xs font-semibold text-white rounded-lg transition hover:opacity-90 disabled:opacity-60"
-                      style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}>
-                      {geoLoading ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
+                    <Button
+                      type="button"
+                      size="sm"
+                      icon={geoLoading ? Loader2 : Crosshair}
+                      disabled={geoLoading}
+                      onClick={useCurrentLocation}
+                      className="flex-1"
+                    >
                       My location
-                    </button>
-                    <button type="button" onClick={geocodeFromAddress} disabled={geoLoading}
-                      className="flex-1 flex items-center justify-center gap-1.5 p-3 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-60">
-                      {geoLoading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      icon={geoLoading ? Loader2 : Search}
+                      disabled={geoLoading}
+                      onClick={geocodeFromAddress}
+                      className="flex-1"
+                    >
                       From address
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Property Details */}
-            <Section title="Property Details">
+            <FormSection title="Property Details">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Field label="Property Type">
-                  <select name="propertyType" value={formData.propertyType} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="propertyType" value={formData.propertyType} onChange={handleChange} className={INPUT_CLASS}>
                     <option value="">Select property type</option>
                     <option value="apartment">Apartment</option>
                     <option value="house">House</option>
@@ -451,7 +449,7 @@ export default function ListingDashboard() {
                   </select>
                 </Field>
                 <Field label="Furnishing">
-                  <select name="furnishing" value={formData.furnishing} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="furnishing" value={formData.furnishing} onChange={handleChange} className={INPUT_CLASS}>
                     <option value="">Select furnishing</option>
                     <option value="Fully Furnished">Fully Furnished</option>
                     <option value="Semi-Furnished">Semi-Furnished</option>
@@ -459,41 +457,40 @@ export default function ListingDashboard() {
                   </select>
                 </Field>
                 <Field label="Bedrooms">
-                  <select name="bedrooms" value={formData.bedrooms} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="bedrooms" value={formData.bedrooms} onChange={handleChange} className={INPUT_CLASS}>
                     <option value="">Number of bedrooms</option>
                     {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
                   </select>
                 </Field>
                 <Field label="Bathrooms">
-                  <select name="bathrooms" value={formData.bathrooms} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="bathrooms" value={formData.bathrooms} onChange={handleChange} className={INPUT_CLASS}>
                     <option value="">Number of bathrooms</option>
                     {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
                   </select>
                 </Field>
                 <Field label="Floor Area (m²)">
-                  <input type="number" name="area" value={formData.area} onChange={handleChange} placeholder="e.g., 45" min="0" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input type="number" name="area" value={formData.area} onChange={handleChange} placeholder="e.g., 45" min="0" className={INPUT_CLASS} />
                 </Field>
                 <Field label="Max Occupants">
-                  <input type="number" name="maxOccupants" value={formData.maxOccupants} onChange={handleChange} placeholder="e.g., 4" min="0" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input type="number" name="maxOccupants" value={formData.maxOccupants} onChange={handleChange} placeholder="e.g., 4" min="0" className={INPUT_CLASS} />
                 </Field>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Pricing */}
-            <Section title="Rental Pricing">
+            <FormSection title="Rental Pricing">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Field label="Monthly Rent (₱) *">
-                  <input type="number" name="monthlyRent" value={formData.monthlyRent} onChange={handleChange} placeholder="e.g., 5000" min="0" className="w-full p-3 border border-gray-300 rounded-lg" required />
+                  <input type="number" name="monthlyRent" value={formData.monthlyRent} onChange={handleChange} placeholder="e.g., 5000" min="0" className={INPUT_CLASS} required />
                 </Field>
                 <Field label="Security Deposit (₱)">
-                  <input type="number" name="securityDeposit" value={formData.securityDeposit} onChange={handleChange} placeholder="e.g., 5000" min="0" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input type="number" name="securityDeposit" value={formData.securityDeposit} onChange={handleChange} placeholder="e.g., 5000" min="0" className={INPUT_CLASS} />
                 </Field>
                 <Field label="Advance Payment (₱)">
-                  <input type="number" name="advancePayment" value={formData.advancePayment} onChange={handleChange} placeholder="e.g., 5000" min="0" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input type="number" name="advancePayment" value={formData.advancePayment} onChange={handleChange} placeholder="e.g., 5000" min="0" className={INPUT_CLASS} />
                 </Field>
                 <div className="md:col-span-3">
                   <Field label="Payment Terms">
-                    <select name="paymentTerms" value={formData.paymentTerms} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                    <select name="paymentTerms" value={formData.paymentTerms} onChange={handleChange} className={INPUT_CLASS}>
                       <option value="">Select payment terms</option>
                       <option>1 Month Advance + 1 Month Upfront</option>
                       <option>1 Month Advance + 1 Month Deposit</option>
@@ -502,99 +499,93 @@ export default function ListingDashboard() {
                   </Field>
                 </div>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Availability & Lease */}
-            <Section title="Availability & Lease">
+            <FormSection title="Availability & Lease">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Availability</label>
+                  <label className="block font-body text-sm font-medium text-vxr-text mb-2">Availability</label>
                   <div className="flex gap-6 pt-2">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input type="radio" name="availability" value="immediate" checked={formData.availability === "immediate"} onChange={handleChange} className="w-4 h-4" style={{ accentColor: "#e8756a" }} /> Immediate
+                    <label className="flex items-center gap-2 font-body text-sm">
+                      <input type="radio" name="availability" value="immediate" checked={formData.availability === "immediate"} onChange={handleChange} className="w-4 h-4 accent-vxr-accent" /> Immediate
                     </label>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input type="radio" name="availability" value="future" checked={formData.availability === "future"} onChange={handleChange} className="w-4 h-4" style={{ accentColor: "#e8756a" }} /> Future Date
+                    <label className="flex items-center gap-2 font-body text-sm">
+                      <input type="radio" name="availability" value="future" checked={formData.availability === "future"} onChange={handleChange} className="w-4 h-4 accent-vxr-accent" /> Future Date
                     </label>
                   </div>
                 </div>
                 <Field label="Available From">
-                  <input type="date" name="availableFrom" value={formData.availableFrom} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input type="date" name="availableFrom" value={formData.availableFrom} onChange={handleChange} className={INPUT_CLASS} />
                 </Field>
                 <Field label="Lease Term (Months)">
-                  <select name="leaseTerm" value={formData.leaseTerm} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="leaseTerm" value={formData.leaseTerm} onChange={handleChange} className={INPUT_CLASS}>
                     {[6, 12, 24, 36].map((m) => <option key={m} value={m}>{m} months</option>)}
                   </select>
                 </Field>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Description */}
-            <Section title="Unit Description">
+            <FormSection title="Unit Description">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Field label="About The Place">
-                  <textarea name="aboutPlace" value={formData.aboutPlace} onChange={handleChange} rows="3" placeholder="Describe the place, its features, neighborhood…" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <textarea name="aboutPlace" value={formData.aboutPlace} onChange={handleChange} rows="3" placeholder="Describe the place, its features, neighborhood…" className={INPUT_CLASS} />
                 </Field>
                 <Field label="Unit Details">
-                  <textarea name="unitDetails" value={formData.unitDetails} onChange={handleChange} rows="3" placeholder="Room details, included utilities, etc." className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <textarea name="unitDetails" value={formData.unitDetails} onChange={handleChange} rows="3" placeholder="Room details, included utilities, etc." className={INPUT_CLASS} />
                 </Field>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Amenities */}
-            <Section title="Amenities & Features">
-              <p className="text-sm text-gray-600 mb-3">Select all amenities that are available</p>
+            <FormSection title="Amenities & Features">
+              <p className="font-body text-sm text-vxr-text-sub mb-3">Select all amenities that are available</p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {AMENITIES.map((amenity) => (
-                  <label key={amenity} className="flex items-center gap-2 text-sm">
+                  <label key={amenity} className="flex items-center gap-2 font-body text-sm">
                     <input
                       type="checkbox"
                       name={amenity}
                       checked={formData.amenities.includes(amenity)}
                       onChange={handleChange}
-                      className="w-4 h-4"
-                      style={{ accentColor: "#e8756a" }}
+                      className="w-4 h-4 accent-vxr-accent"
                     />
                     {amenity}
                   </label>
                 ))}
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Rules */}
-            <Section title="Rental Rules & Policies">
+            <FormSection title="Rental Rules & Policies">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <Field label="Pet Policy">
-                  <select name="petPolicy" value={formData.petPolicy} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="petPolicy" value={formData.petPolicy} onChange={handleChange} className={INPUT_CLASS}>
                     <option>No Pets</option><option>Pets Allowed</option><option>Small Pets Only</option>
                   </select>
                 </Field>
                 <Field label="Smoking">
-                  <select name="smokingPolicy" value={formData.smokingPolicy} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="smokingPolicy" value={formData.smokingPolicy} onChange={handleChange} className={INPUT_CLASS}>
                     <option>No</option><option>Outside Only</option><option>Yes</option>
                   </select>
                 </Field>
                 <Field label="Guest Policy">
-                  <select name="guestPolicy" value={formData.guestPolicy} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="guestPolicy" value={formData.guestPolicy} onChange={handleChange} className={INPUT_CLASS}>
                     <option>Day/Nite Only</option><option>Weekend</option><option>Not Allowed</option><option>Full Allowance</option>
                   </select>
                 </Field>
                 <Field label="Curfew">
-                  <select name="curfew" value={formData.curfew} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="curfew" value={formData.curfew} onChange={handleChange} className={INPUT_CLASS}>
                     <option>No Curfew</option><option>With Curfew</option>
                   </select>
                 </Field>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Host */}
-            <Section title="Host Information">
+            <FormSection title="Host Information">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Field label="Host Name">
-                  <input type="text" name="hostName" value={formData.hostName} onChange={handleChange} placeholder="Enter host name" className="w-full p-3 border border-gray-300 rounded-lg" />
+                  <input type="text" name="hostName" value={formData.hostName} onChange={handleChange} placeholder="Enter host name" className={INPUT_CLASS} />
                 </Field>
                 <Field label="Role">
-                  <select name="hostRole" value={formData.hostRole} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="hostRole" value={formData.hostRole} onChange={handleChange} className={INPUT_CLASS}>
                     <option value="">Select role</option>
                     <option>Property Owner</option>
                     <option>Property Manager</option>
@@ -603,16 +594,17 @@ export default function ListingDashboard() {
                   </select>
                 </Field>
                 <Field label="Response Time">
-                  <select name="responseTime" value={formData.responseTime} onChange={handleChange} className="w-full p-3 border border-gray-300 rounded-lg bg-white">
+                  <select name="responseTime" value={formData.responseTime} onChange={handleChange} className={INPUT_CLASS}>
                     <option>Within 1 Hour</option><option>Within 2 Hours</option><option>Within 6 Hours</option><option>Within 24 Hours</option>
                   </select>
                 </Field>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Media */}
-            <Section title="Media Upload">
-              <p className="text-sm text-gray-600 mb-4">Photos are uploaded to Supabase Storage and displayed on every device.</p>
+            <FormSection title="Media Upload">
+              <p className="font-body text-sm text-vxr-text-sub mb-4">
+                Photos are uploaded to Supabase Storage and displayed on every device.
+              </p>
 
               {allPreviews.length > 0 && (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -621,17 +613,24 @@ export default function ListingDashboard() {
                       ? () => removeExistingImage(p.recordId)
                       : () => removeNewImage(p.index);
                     return (
-                      <div key={`${p.existing ? p.recordId : "new"}-${p.url}`} className="relative group">
-                        <img src={p.url} alt={`Upload ${index}`} className="w-full h-24 object-cover rounded-lg border border-gray-200" />
+                      <div
+                        key={`${p.existing ? p.recordId : "new"}-${p.url}`}
+                        className="relative group"
+                      >
+                        <img
+                          src={p.url}
+                          alt={`Upload ${index}`}
+                          className="w-full h-24 object-cover rounded-vxr-md border border-vxr-border"
+                        />
                         {!p.existing && (
-                          <span className="absolute bottom-1 left-1 text-[10px] bg-emerald-500 text-white px-1.5 py-0.5 rounded">
+                          <span className="absolute bottom-1 left-1 font-body text-[10px] bg-vxr-success text-white px-1.5 py-0.5 rounded">
                             new
                           </span>
                         )}
                         <button
                           type="button"
                           onClick={handler}
-                          className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 hover:bg-red-600 opacity-80 group-hover:opacity-100"
+                          className="absolute top-1 right-1 bg-vxr-danger text-white rounded-full p-1 hover:brightness-110 opacity-80 group-hover:opacity-100"
                         >
                           <X size={14} />
                         </button>
@@ -642,20 +641,26 @@ export default function ListingDashboard() {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <label className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:border-orange-400 transition">
-                  <input type="file" accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
-                  <ImageIcon className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                  <p className="font-medium text-sm">Property Images</p>
-                  <p className="text-xs text-gray-500">Click to upload</p>
+                <label className="border-2 border-dashed border-vxr-border rounded-vxr-md p-4 text-center cursor-pointer hover:border-vxr-accent transition bg-vxr-surface2/30">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleImageUpload}
+                    className="hidden"
+                  />
+                  <ImageIcon className="w-8 h-8 text-vxr-text-muted mx-auto mb-2" />
+                  <p className="font-display font-bold text-sm text-vxr-text">Property Images</p>
+                  <p className="font-body text-xs text-vxr-text-sub">Click to upload</p>
                 </label>
 
-                <div className="border-2 border-dashed border-gray-200 rounded-lg p-4 text-center cursor-not-allowed opacity-60">
-                  <Camera className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                  <p className="font-medium text-sm">360 Media</p>
-                  <p className="text-xs text-gray-500">Coming soon</p>
+                <div className="border-2 border-dashed border-vxr-border rounded-vxr-md p-4 text-center cursor-not-allowed opacity-60 bg-vxr-surface2/30">
+                  <Camera className="w-8 h-8 text-vxr-text-muted mx-auto mb-2" />
+                  <p className="font-display font-bold text-sm text-vxr-text">360 Media</p>
+                  <p className="font-body text-xs text-vxr-text-sub">Coming soon</p>
                 </div>
 
-                <label className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:border-orange-400 transition">
+                <label className="border-2 border-dashed border-vxr-border rounded-vxr-md p-4 text-center cursor-pointer hover:border-vxr-accent transition bg-vxr-surface2/30">
                   <input
                     type="file"
                     accept="image/*"
@@ -668,32 +673,29 @@ export default function ListingDashboard() {
                     }}
                     className="hidden"
                   />
-                  <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                  <p className="font-medium text-sm">Cover Photo</p>
-                  <p className="text-xs text-gray-500">Added to front</p>
+                  <Upload className="w-8 h-8 text-vxr-text-muted mx-auto mb-2" />
+                  <p className="font-display font-bold text-sm text-vxr-text">Cover Photo</p>
+                  <p className="font-body text-xs text-vxr-text-sub">Added to front</p>
                 </label>
               </div>
-            </Section>
+            </FormSection>
 
-            {/* Actions */}
-            <div className="flex justify-end gap-4">
-              <button
+            <div className="flex justify-end gap-3">
+              <Button
                 type="button"
-                onClick={() => navigate("/my-listings")}
+                variant="secondary"
                 disabled={saving}
-                className="px-8 py-3 text-gray-600 rounded-lg font-medium border border-gray-300 hover:bg-gray-50 transition disabled:opacity-60"
+                onClick={() => navigate("/my-listings")}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
                 disabled={saving}
-                className="px-8 py-3 text-white rounded-lg font-medium hover:opacity-90 transition inline-flex items-center gap-2 disabled:opacity-60"
-                style={{ backgroundColor: "#e8756a" }}
+                icon={saving ? Loader2 : undefined}
               >
-                {saving && <Loader2 size={16} className="animate-spin" />}
                 {saving ? "Saving..." : isEditMode ? "Update Listing" : "Create Listing"}
-              </button>
+              </Button>
             </div>
           </div>
         </form>
@@ -702,84 +704,22 @@ export default function ListingDashboard() {
   );
 }
 
-function Section({ title, children }) {
+function FormSection({ title, children }) {
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-6">
-      <h3 className="text-lg font-semibold mb-4">{title}</h3>
+    <Card className="p-6">
+      <h3 className="font-display text-lg font-extrabold text-vxr-text tracking-tight mb-4">
+        {title}
+      </h3>
       {children}
-    </div>
+    </Card>
   );
 }
 
 function Field({ label, children }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
+      <label className="block font-body text-sm font-medium text-vxr-text mb-2">{label}</label>
       {children}
     </div>
-  );
-}
-
-function Header({ navigate, dropdownOpen, setDropdownOpen, onLogout }) {
-  return (
-    <nav
-      className="sticky top-0 z-50"
-      style={{ background: "linear-gradient(to right, #e8756a, #f0a090)" }}
-      onClick={() => setDropdownOpen(false)}
-    >
-      <div
-        style={{ width: "100%", padding: "10px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", boxSizing: "border-box" }}
-        onClick={e => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <button onClick={() => navigate(-1)} style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 4
-          }}>
-            <ArrowLeft size={22} color="white" />
-          </button>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div className="w-9 h-9 bg-white rounded-lg flex items-center justify-center shadow-sm">
-              <span className="font-black text-lg" style={{ color: "#e8756a" }}>V</span>
-            </div>
-            <span className="font-bold text-white text-lg tracking-wide">ViewxRent</span>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
-          <button onClick={() => navigate("/home2")} style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 4
-          }}>
-            <Home size={22} color="white" />
-          </button>
-          <button style={{
-            background: "none", border: "none", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 4, position: "relative"
-          }}>
-            <Bell size={22} color="white" />
-            <span style={{ position: "absolute", top: 2, right: 2, width: 8, height: 8, borderRadius: "50%", background: "#ff3b30", border: "1.5px solid #f0a090" }} />
-          </button>
-          <button onClick={() => setDropdownOpen(!dropdownOpen)} style={{
-            display: "flex", alignItems: "center", gap: 8,
-            background: "white", border: "none", cursor: "pointer",
-            borderRadius: 999, padding: "5px 14px 5px 6px",
-            boxShadow: "0 1px 4px rgba(0,0,0,0.08)"
-          }}>
-            <div style={{
-              width: 34, height: 34, borderRadius: "50%",
-              background: "linear-gradient(135deg, #EC6138, #FF8E9E)",
-              color: "white", fontWeight: 700,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 14
-            }}>
-              U
-            </div>
-            <div style={{ width: 0, height: 0, borderLeft: "6px solid transparent", borderRight: "6px solid transparent", borderTop: "8px solid #222" }} />
-          </button>
-          {dropdownOpen && <ProfileDropdown onLogout={onLogout} />}
-        </div>
-      </div>
-    </nav>
   );
 }

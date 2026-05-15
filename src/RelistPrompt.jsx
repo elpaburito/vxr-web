@@ -7,12 +7,8 @@ import {
 import { useAuth } from "./context/AuthContext.jsx";
 import { supabase } from "./lib/supabase";
 import { relistListing, archiveListing } from "./lib/postRentService";
-
-const BRAND  = "#F36C6C";
-const INK    = "#101321";
-const MUTED  = "#6B7280";
-const BG     = "#FAF7F6";
-const BORDER = "#EFE7E5";
+import { Card, Button } from "./components/vxr";
+import NotificationBell from "./components/NotificationBell.jsx";
 
 export default function RelistPrompt() {
   const { id } = useParams();
@@ -20,10 +16,10 @@ export default function RelistPrompt() {
   const { user, isAuthenticated } = useAuth();
 
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy]       = useState(false);
+  const [busy, setBusy] = useState(false);
   const [listing, setListing] = useState(null);
   const [location, setLocation] = useState(null);
-  const [error, setError]     = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (isAuthenticated === false) navigate("/login");
@@ -34,8 +30,16 @@ export default function RelistPrompt() {
     setLoading(true);
     setError(null);
     const [{ data: l, error: lErr }, { data: loc }] = await Promise.all([
-      supabase.from("listings").select("id, title, status, landlord_id").eq("id", id).maybeSingle(),
-      supabase.from("listing_locations").select("full_address, city, province").eq("listing_id", id).maybeSingle(),
+      supabase
+        .from("listings")
+        .select("id, title, status, landlord_id")
+        .eq("id", id)
+        .maybeSingle(),
+      supabase
+        .from("listing_locations")
+        .select("full_address, city, province")
+        .eq("listing_id", id)
+        .maybeSingle(),
     ]);
     if (lErr) setError(lErr.message);
     setListing(l ?? null);
@@ -43,15 +47,21 @@ export default function RelistPrompt() {
     setLoading(false);
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  const isLandlord = listing?.landlord_id && user?.id && listing.landlord_id === user.id;
+  const isLandlord =
+    listing?.landlord_id && user?.id && listing.landlord_id === user.id;
 
   const onRelistAsIs = async () => {
     setBusy(true);
     const { error: e } = await relistListing({ listingId: id, mode: "as_is" });
     setBusy(false);
-    if (e) { alert(e.message); return; }
+    if (e) {
+      alert(e.message);
+      return;
+    }
     navigate("/my-listings");
   };
 
@@ -59,7 +69,10 @@ export default function RelistPrompt() {
     setBusy(true);
     const { error: e } = await relistListing({ listingId: id, mode: "edit" });
     setBusy(false);
-    if (e) { alert(e.message); return; }
+    if (e) {
+      alert(e.message);
+      return;
+    }
     navigate(`/enlist?edit=${id}`);
   };
 
@@ -67,79 +80,99 @@ export default function RelistPrompt() {
     setBusy(true);
     const { error: e } = await archiveListing({ listingId: id });
     setBusy(false);
-    if (e) { alert(e.message); return; }
+    if (e) {
+      alert(e.message);
+      return;
+    }
     navigate("/my-listings");
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: BG }}>
-        <Loader2 className="animate-spin" size={32} color={BRAND} />
+      <div className="min-h-screen flex items-center justify-center bg-vxr-bg">
+        <Loader2 className="animate-spin text-vxr-accent" size={32} />
       </div>
     );
   }
 
   if (error || !listing) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-3 px-6" style={{ background: BG }}>
-        <AlertCircle size={36} className="text-red-400" />
-        <p className="text-sm text-center" style={{ color: MUTED }}>{error ?? "Listing not found."}</p>
-        <button onClick={() => navigate(-1)} className="text-sm underline" style={{ color: BRAND }}>Go back</button>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3 px-6 bg-vxr-bg">
+        <AlertCircle size={36} className="text-vxr-danger" />
+        <p className="font-body text-sm text-center text-vxr-text-sub">
+          {error ?? "Listing not found."}
+        </p>
+        <Button variant="ghost" size="sm" onClick={() => navigate(-1)}>
+          Go back
+        </Button>
       </div>
     );
   }
 
   if (!isLandlord) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-3 px-6" style={{ background: BG }}>
-        <Lock size={36} className="text-slate-400" />
-        <p className="text-sm font-semibold" style={{ color: INK }}>Landlord-only</p>
-        <button onClick={() => navigate(-1)} className="text-sm underline" style={{ color: BRAND }}>Go back</button>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3 px-6 bg-vxr-bg">
+        <Lock size={36} className="text-vxr-text-muted" />
+        <p className="font-display text-sm font-bold text-vxr-text">Landlord-only</p>
+        <Button variant="ghost" size="sm" onClick={() => navigate(-1)}>
+          Go back
+        </Button>
       </div>
     );
   }
 
-  const address = location?.full_address ||
+  const address =
+    location?.full_address ||
     [location?.city, location?.province].filter(Boolean).join(", ") ||
     "Address unavailable";
 
   return (
-    <div className="min-h-screen pb-12" style={{ background: BG }}>
-      <header className="bg-white border-b sticky top-0 z-10" style={{ borderColor: BORDER }}>
+    <div className="min-h-screen pb-12 bg-vxr-bg">
+      <header
+        className="sticky top-0 z-10 backdrop-blur-xl border-b border-vxr-border"
+        style={{ background: "rgba(247,245,243,0.85)" }}
+      >
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center gap-3">
-          <button onClick={() => navigate("/my-listings")} className="p-2 rounded-xl hover:bg-slate-100">
-            <ArrowLeft size={20} style={{ color: INK }} />
+          <button
+            onClick={() => navigate("/my-listings")}
+            className="p-2 rounded-vxr-md hover:bg-vxr-surface2 text-vxr-text-sub transition-colors"
+          >
+            <ArrowLeft size={20} />
           </button>
-          <h1 className="text-base font-bold" style={{ color: INK }}>Ready to relist?</h1>
+          <h1 className="font-display text-base font-extrabold text-vxr-text flex-1">
+            Ready to relist?
+          </h1>
+          <NotificationBell framed />
         </div>
       </header>
 
       <div className="max-w-2xl mx-auto px-4 pt-6 space-y-4">
-
-        {/* Listing summary */}
-        <div className="bg-white rounded-2xl p-5 border" style={{ borderColor: BORDER }}>
+        <Card className="p-5">
           <div className="flex items-start gap-3">
-            <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: `${BRAND}1A` }}>
-              <Home size={20} color={BRAND} />
+            <div className="w-12 h-12 rounded-vxr-md bg-vxr-accent-soft flex items-center justify-center">
+              <Home size={20} className="text-vxr-accent" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-base font-bold truncate" style={{ color: INK }}>{listing.title || "Untitled listing"}</p>
+              <p className="font-display text-base font-bold text-vxr-text truncate">
+                {listing.title || "Untitled listing"}
+              </p>
               <div className="flex items-center gap-1.5 mt-1">
-                <MapPin size={12} color={MUTED} />
-                <span className="text-[12px] truncate" style={{ color: MUTED }}>{address}</span>
+                <MapPin size={12} className="text-vxr-text-muted" />
+                <span className="font-body text-xs text-vxr-text-sub truncate">
+                  {address}
+                </span>
               </div>
-              <p className="mt-2 text-[11px] font-bold uppercase tracking-wider" style={{ color: MUTED }}>
+              <p className="mt-2 font-body text-[11px] font-bold uppercase tracking-wider text-vxr-text-muted">
                 Currently: {listing.status}
               </p>
             </div>
           </div>
-        </div>
+        </Card>
 
-        <p className="text-sm leading-relaxed" style={{ color: MUTED }}>
+        <p className="font-body text-sm leading-relaxed text-vxr-text-sub">
           Your previous tenancy has closed. Choose what to do with this listing.
         </p>
 
-        {/* Choice buttons */}
         <div className="space-y-3">
           <ChoiceButton
             icon={Pencil}
@@ -174,22 +207,29 @@ function ChoiceButton({ icon: Icon, title, description, onClick, busy, primary }
     <button
       onClick={onClick}
       disabled={busy}
-      className="w-full text-left bg-white rounded-2xl p-4 border hover:border-[#F36C6C] transition disabled:opacity-50"
-      style={{ borderColor: BORDER }}
+      className="w-full text-left bg-vxr-surface rounded-vxr border border-vxr-border shadow-vxr-sm p-4 hover:border-vxr-accent hover:shadow-vxr-md transition disabled:opacity-50"
     >
       <div className="flex items-start gap-3">
         <div
-          className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
-          style={{ background: primary ? BRAND : `${BRAND}1A` }}
+          className={`w-11 h-11 rounded-vxr-md flex items-center justify-center flex-shrink-0 ${
+            primary ? "bg-vxr-gradient shadow-vxr-cta" : "bg-vxr-accent-soft"
+          }`}
         >
-          {busy
-            ? <Loader2 size={18} className="animate-spin" color={primary ? "white" : BRAND} />
-            : <Icon size={18} color={primary ? "white" : BRAND} />
-          }
+          {busy ? (
+            <Loader2
+              size={18}
+              className={`animate-spin ${primary ? "text-white" : "text-vxr-accent"}`}
+            />
+          ) : (
+            <Icon
+              size={18}
+              className={primary ? "text-white" : "text-vxr-accent"}
+            />
+          )}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold" style={{ color: INK }}>{title}</p>
-          <p className="text-[12px] mt-1" style={{ color: MUTED }}>{description}</p>
+          <p className="font-display text-sm font-bold text-vxr-text">{title}</p>
+          <p className="font-body text-xs text-vxr-text-sub mt-1">{description}</p>
         </div>
       </div>
     </button>
