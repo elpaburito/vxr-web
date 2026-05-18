@@ -13,7 +13,7 @@ import NotificationBell from "./components/NotificationBell.jsx";
 export default function RelistPrompt() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -22,8 +22,8 @@ export default function RelistPrompt() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (isAuthenticated === false) navigate("/login");
-  }, [isAuthenticated, navigate]);
+    if (!authLoading && isAuthenticated === false) navigate("/login");
+  }, [authLoading, isAuthenticated, navigate]);
 
   const load = useCallback(async () => {
     if (!id) return;

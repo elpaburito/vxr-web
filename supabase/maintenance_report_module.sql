@@ -52,7 +52,7 @@ CREATE POLICY report_landlord_select ON public.maintenance_report
     EXISTS (
       SELECT 1 FROM public.listings l
       WHERE l.id = maintenance_report.listing_id
-        AND l.user_id = auth.uid()
+        AND l.landlord_id = auth.uid()
     )
   );
 
@@ -63,13 +63,13 @@ CREATE POLICY report_landlord_update ON public.maintenance_report
     EXISTS (
       SELECT 1 FROM public.listings l
       WHERE l.id = maintenance_report.listing_id
-        AND l.user_id = auth.uid()
+        AND l.landlord_id = auth.uid()
     )
   )
   WITH CHECK (
     EXISTS (
       SELECT 1 FROM public.listings l
       WHERE l.id = maintenance_report.listing_id
-        AND l.user_id = auth.uid()
+        AND l.landlord_id = auth.uid()
     )
   );

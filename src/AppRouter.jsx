@@ -13,6 +13,9 @@ import ContractView from "./ContractView.jsx";
 import ContractPayment from "./ContractPayment.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 import AdminCMS from "./AdminCMS.jsx";
+import AdminAuditLog from "./AdminAuditLog.jsx";
+import AdminPayments from "./AdminPayments.jsx";
+import AdminReports from "./AdminReports.jsx";
 import RentalApplicationForm from "./RentalApplicationForm.jsx";
 import InStayDashboard from "./InStayDashboard.jsx";
 import TenantManagement from "./TenantManagement.jsx";
@@ -56,6 +59,9 @@ function AppRouter() {
               <Route path="/my-payments" element={<MyPayments />} />
               <Route path="/admin" element={<AdminDashboard />} />
               <Route path="/admin/cms" element={<AdminCMS />} />
+              <Route path="/admin/audit" element={<AdminAuditLog />} />
+              <Route path="/admin/payments" element={<AdminPayments />} />
+              <Route path="/admin/reports" element={<AdminReports />} />
               </Routes>
             </WishlistProvider>
           </ListingsProvider>

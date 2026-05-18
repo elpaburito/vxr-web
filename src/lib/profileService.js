@@ -18,11 +18,14 @@ export async function updateMyProfile(updates) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Not authenticated");
   const payload = { ...updates, updated_at: new Date().toISOString() };
-  const { error } = await T(
-    supabase.from("profiles").update(payload).eq("id", user.id),
+  const { data, error } = await T(
+    supabase.from("profiles").update(payload).eq("id", user.id).select(),
     "update profile"
   );
   if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error("Profile row not found — please contact support.");
+  }
 }
 
 export async function uploadAvatar(file) {

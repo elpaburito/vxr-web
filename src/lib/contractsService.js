@@ -3,6 +3,30 @@ import { supabase } from "./supabase";
 // Mobile uses "contract" (singular) and a separate "payment" table.
 const TABLE = "contract";
 
+// Discriminated-union parser for the `*_signature` text column. See
+// normalizeContract for the three legal formats. Malformed input
+// silently degrades to null so the UI falls back to the cursive name.
+function parseSignature(raw) {
+  if (typeof raw !== "string" || raw === "" || raw === "signed") return null;
+  if (raw.startsWith("data:image/")) return { kind: "image", url: raw };
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      Array.isArray(parsed) &&
+      parsed.every(
+        (s) =>
+          Array.isArray(s) &&
+          s.every((p) => p && typeof p.x === "number" && typeof p.y === "number"),
+      )
+    ) {
+      return { kind: "strokes", strokes: parsed };
+    }
+  } catch {
+    // not JSON — fall through
+  }
+  return null;
+}
+
 /**
  * Normalize a Supabase contract row to the camelCase shape the UI uses.
  * Mobile stores signatures as separate text+name+timestamp columns.
@@ -12,24 +36,24 @@ export function normalizeContract(row) {
   if (!row) return null;
 
   // Build signature objects from mobile's separate columns. The
-  // `*_signature` text column either holds a literal "signed" sentinel
-  // (the original mobile encoding) or a `data:image/png;base64,...`
-  // URL of the drawn signature; we expose `image` only when it's the
-  // latter so the UI can render an <img> instead of a typed name.
-  const sigImage = (raw) =>
-    typeof raw === "string" && raw.startsWith("data:image/") ? raw : null;
+  // `*_signature` text column can hold any of three formats:
+  //   - `"signed"` legacy sentinel (no recoverable drawing)
+  //   - `data:image/png;base64,...` data URL (web canvas / new mobile)
+  //   - `[[{x,y},...]]` JSON stroke coords (legacy mobile)
+  // parseSignature returns a discriminated union so the UI can render
+  // an <img>, an SVG, or the cursive-name fallback accordingly.
   const landlordSignature = row.landlord_signature
     ? {
         name:     row.landlord_signed_name ?? "",
         signedAt: row.landlord_signed_at,
-        image:    sigImage(row.landlord_signature),
+        data:     parseSignature(row.landlord_signature),
       }
     : null;
   const tenantSignature = row.tenant_signature
     ? {
         name:     row.tenant_signed_name ?? "",
         signedAt: row.tenant_signed_at,
-        image:    sigImage(row.tenant_signature),
+        data:     parseSignature(row.tenant_signature),
       }
     : null;
 
@@ -251,7 +275,7 @@ export async function fetchMyActiveContract(tenantId) {
       .limit(1),
     supabase
       .from("listing_locations")
-      .select("full_address, city, province")
+      .select("full_address, barangay, city, province")
       .eq("listing_id", listingId)
       .limit(1),
     supabase
@@ -273,7 +297,7 @@ export async function fetchMyActiveContract(tenantId) {
   if (!financials || !availability || !location) {
     const { data: full } = await supabase
       .from("listings_full")
-      .select("monthly_rent, security_deposit, advance_payment, available_from, lease_term, full_address, city, province")
+      .select("monthly_rent, security_deposit, advance_payment, available_from, lease_term, full_address, barangay, city, province")
       .eq("id", listingId)
       .limit(1);
     const f = full?.[0];
@@ -285,7 +309,7 @@ export async function fetchMyActiveContract(tenantId) {
         availability = { available_from: f.available_from, lease_term: f.lease_term };
       }
       if (!location && (f.full_address || f.city || f.province)) {
-        location = { full_address: f.full_address, city: f.city, province: f.province };
+        location = { full_address: f.full_address, barangay: f.barangay, city: f.city, province: f.province };
       }
     }
   }
@@ -317,6 +341,7 @@ export async function fetchMyActiveContract(tenantId) {
       available_from: availability?.available_from ?? null,
       lease_term:     availability?.lease_term     ?? null,
       full_address:   location?.full_address       ?? null,
+      barangay:       location?.barangay           ?? null,
       city:           location?.city               ?? null,
       province:       location?.province           ?? null,
     },
@@ -449,52 +474,6 @@ export async function signContract(contractId, role, signerName, signatureDataUr
     .single();
 
   return { data, error };
-}
-
-/**
- * Record a completed payment. Inserts into the `payment` table and
- * updates contract.status to 'paid'.
- */
-export async function recordContractPayment(contractId, paymentData) {
-  const amountCents = Math.round((paymentData.amount ?? 0) * 100);
-  const { error: payErr } = await supabase.from("payment").insert({
-    contract_id:                contractId,
-    stripe_payment_intent_id:   paymentData.transactionId,
-    paymongo_payment_intent_id: paymentData.transactionId,
-    amount_cents:               amountCents > 0 ? amountCents : 1,
-    currency:                   "php",
-    status:                     "succeeded",
-    paid_at:                    paymentData.paidAt ?? new Date().toISOString(),
-    method:                     paymentData.method ?? "card",
-    last4:                      paymentData.last4 ?? null,
-    name:                       paymentData.name ?? null,
-  });
-  if (payErr) return { error: payErr };
-
-  const { error } = await supabase
-    .from(TABLE)
-    .update({ status: "paid", updated_at: new Date().toISOString() })
-    .eq("id", contractId);
-  if (error) return { error };
-
-  // Take the listing out of the public browse + block fresh applies.
-  // The Edge Function `record-payment` does the same thing using the
-  // service-role client; this branch is the legacy mock-payment path
-  // and the listings RLS only lets the landlord update their own
-  // listings, so this update is a no-op for tenants — the webhook /
-  // record-payment Edge Function will pick up the work instead.
-  const { data: contractRow } = await supabase
-    .from(TABLE)
-    .select("listing_id")
-    .eq("id", contractId)
-    .maybeSingle();
-  if (contractRow?.listing_id) {
-    await supabase
-      .from("listings")
-      .update({ status: "rented", updated_at: new Date().toISOString() })
-      .eq("id", contractRow.listing_id);
-  }
-  return { error: null };
 }
 
 /**

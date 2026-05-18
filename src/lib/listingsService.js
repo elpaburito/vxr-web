@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { cleanFullAddress } from "./locationUtils";
 
 const LISTINGS_BUCKET = "listing-images";
 const CONTRACTS_BUCKET = "listing-contracts";
@@ -179,8 +180,11 @@ export function normalizeListing(row) {
 
     // Location (from listing_locations)
     location,
-    address: row.full_address ?? null,
-    fullAddress: row.full_address ?? [row.barangay, row.city, row.province].filter(Boolean).join(", "),
+    address: cleanFullAddress(row.full_address ?? null, row),
+    fullAddress: cleanFullAddress(
+      row.full_address ?? [row.barangay, row.city, row.province].filter(Boolean).join(", "),
+      row
+    ),
     city: row.city ?? null,
     barangay: row.barangay ?? null,
     province: row.province ?? null,
@@ -412,9 +416,12 @@ async function writeSatelliteTables(listingId, p) {
   // 1. Location
   if ([p.address, p.barangay, p.city, p.province, p.postalCode, p.nearbyLandmarks, p.latitude, p.longitude]
       .some((v) => v !== undefined && v !== "")) {
-    const fullAddress = [p.address, p.barangay, p.city, p.province].filter(Boolean).join(", ") || null;
+    const fullAddress =
+      nonEmpty(p.address) ||
+      [p.barangay, p.city, p.province].filter(Boolean).join(", ") ||
+      null;
     await upsertSatellite("listing_locations", listingId, {
-      full_address: fullAddress || nonEmpty(p.address),
+      full_address: fullAddress,
       barangay: nonEmpty(p.barangay),
       city: nonEmpty(p.city),
       province: nonEmpty(p.province),

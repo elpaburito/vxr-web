@@ -34,7 +34,7 @@ const fmtDate  = (iso) => {
 export default function MoveOutChecklist() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
 
   const [loading, setLoading]   = useState(true);
   const [busy,    setBusy]      = useState(false);
@@ -45,8 +45,8 @@ export default function MoveOutChecklist() {
   const [forceModal, setForceModal] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated === false) navigate("/login");
-  }, [isAuthenticated, navigate]);
+    if (!authLoading && isAuthenticated === false) navigate("/login");
+  }, [authLoading, isAuthenticated, navigate]);
 
   const load = useCallback(async () => {
     if (!id) return;

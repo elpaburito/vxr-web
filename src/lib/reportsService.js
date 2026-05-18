@@ -6,20 +6,72 @@ const TABLE = "report";
 /**
  * Fetch all reports filed by the current tenant.
  * Mirrors the mobile in_stay_dashboard fetch — joins listings(title) for display.
+ *
+ * Pass `contractId` to scope to a single rental (so a tenant with a previous
+ * rental doesn't see those older reports surface on their current dashboard).
+ * Omit it to get the full cross-contract history.
  */
-export async function fetchMyReports(tenantId) {
+export async function fetchMyReports(tenantId, contractId) {
   if (!tenantId) return { data: [], error: null };
-  const { data, error } = await supabase
+  let query = supabase
     .from(TABLE)
     .select(`
       id, type, priority, status, title, description,
       landlord_response, landlord_responded_at, resolved_at,
-      created_at, listing_id, contract_id,
-      listings ( title )
+      created_at, listing_id, contract_id, landlord_id,
+      listings ( title, landlord_id )
     `)
     .eq("tenant_id", tenantId)
     .order("created_at", { ascending: false });
-  return { data: data ?? [], error };
+  if (contractId) query = query.eq("contract_id", contractId);
+  const { data, error } = await query;
+  if (error || !data?.length) return { data: data ?? [], error };
+
+  // The `report` table is owned by the mobile migration; its FK to `listings`
+  // may be missing from PostgREST's relationship cache, in which case the
+  // `listings ( ... )` embed silently returns null. Hydrate any rows whose
+  // embed came back empty by batch-fetching listings directly.
+  const needsHydration = data.filter((r) => r.listing_id && !r.listings?.title);
+  let listingMap = {};
+  if (needsHydration.length) {
+    const listingIds = [...new Set(needsHydration.map((r) => r.listing_id))];
+    const { data: listingRows } = await supabase
+      .from("listings")
+      .select("id, title, landlord_id")
+      .in("id", listingIds);
+    listingMap = Object.fromEntries((listingRows ?? []).map((l) => [l.id, l]));
+  }
+
+  const hydrated = data.map((r) => ({
+    ...r,
+    listings: r.listings?.title ? r.listings : (listingMap[r.listing_id] ?? r.listings ?? null),
+  }));
+
+  // Resolve a landlord id per row — prefer the report's own column, fall back
+  // to the listing owner — then batch-fetch their profiles for the subtitle.
+  const landlordIds = [
+    ...new Set(
+      hydrated
+        .map((r) => r.landlord_id ?? r.listings?.landlord_id)
+        .filter(Boolean),
+    ),
+  ];
+  let landlordMap = {};
+  if (landlordIds.length) {
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("id, full_name, avatar_url")
+      .in("id", landlordIds);
+    landlordMap = Object.fromEntries((profiles ?? []).map((p) => [p.id, p]));
+  }
+
+  return {
+    data: hydrated.map((r) => {
+      const lid = r.landlord_id ?? r.listings?.landlord_id ?? null;
+      return { ...r, landlord_profile: lid ? (landlordMap[lid] ?? null) : null };
+    }),
+    error: null,
+  };
 }
 
 /**
@@ -53,13 +105,14 @@ export async function fetchLandlordReportsForPage(landlordId) {
 
   const { data: listings, error: lErr } = await supabase
     .from("listings")
-    .select("id")
+    .select("id, title")
     .eq("landlord_id", landlordId);
 
   if (lErr) return { data: [], error: lErr };
   if (!listings?.length) return { data: [], error: null };
 
   const listingIds = listings.map((l) => l.id);
+  const listingMap = Object.fromEntries(listings.map((l) => [l.id, l]));
 
   const { data: reports, error } = await supabase
     .from(TABLE)
@@ -84,7 +137,12 @@ export async function fetchLandlordReportsForPage(landlordId) {
   const profileMap = Object.fromEntries((profiles ?? []).map((p) => [p.id, p]));
 
   return {
-    data: reports.map((r) => ({ ...r, tenant_profile: profileMap[r.tenant_id] ?? null })),
+    data: reports.map((r) => ({
+      ...r,
+      // Fall back to the already-fetched landlord listings if the embed came back null
+      listings: r.listings?.title ? r.listings : (listingMap[r.listing_id] ?? r.listings ?? null),
+      tenant_profile: profileMap[r.tenant_id] ?? null,
+    })),
     error: null,
   };
 }

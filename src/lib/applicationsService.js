@@ -156,46 +156,49 @@ export async function submitApplication({ listingId, tenantId, landlordId, formD
     submitted_at:          new Date().toISOString(),
   };
 
-  let data, error;
+  let appId;
 
   if (isReapplication) {
-    // UPDATE the existing rejected row — resets it to pending with fresh form data
-    ({ data, error } = await supabase
+    // Mirror mobile submitRentalApplicationV2 (property_data.dart:1268-1275):
+    // drop stale docs first, then fire-and-forget UPDATE. No .select().single()
+    // — a 0-row response on UPDATE would otherwise surface as a 406
+    // "Cannot coerce the result to a single JSON object" to the tenant.
+    appId = existing.id;
+    await supabase
+      .from("application_document")
+      .delete()
+      .eq("application_id", appId);
+    const { error: updateErr } = await supabase
       .from("application")
       .update({ ...row, status: "pending" })
-      .eq("id", existing.id)
-      .select("id")
-      .single());
+      .eq("id", appId);
+    if (updateErr) return { data: null, error: updateErr };
   } else {
-    // Normal first-time INSERT
-    ({ data, error } = await supabase
+    const { data: inserted, error: insertErr } = await supabase
       .from("application")
       .insert(row)
       .select("id")
-      .single());
+      .single();
+    if (insertErr) return { data: null, error: insertErr };
+    appId = inserted?.id;
+    if (!appId) {
+      return { data: null, error: new Error("Application created but ID not returned.") };
+    }
   }
 
-  if (error || !data?.id) return { data, error };
-
-  // For re-applications, remove stale document records before inserting new ones
-  if (isReapplication) {
-    await supabase.from("application_document").delete().eq("application_id", data.id);
-  }
-
-  // Insert document records into application_document table
   const docs = [];
   if (validIdFrontPath)
-    docs.push({ application_id: data.id, document_type: "valid_id_front",  url: validIdFrontPath, file_name: documentFiles.validIdFront?.name ?? null });
+    docs.push({ application_id: appId, document_type: "valid_id_front",  url: validIdFrontPath, file_name: documentFiles.validIdFront?.name ?? null });
   if (validIdBackPath)
-    docs.push({ application_id: data.id, document_type: "valid_id_back",   url: validIdBackPath,  file_name: documentFiles.validIdBack?.name  ?? null });
+    docs.push({ application_id: appId, document_type: "valid_id_back",   url: validIdBackPath,  file_name: documentFiles.validIdBack?.name  ?? null });
   if (proofPath)
-    docs.push({ application_id: data.id, document_type: "proof_of_income", url: proofPath,         file_name: documentFiles.proofOfIncome?.name ?? null });
+    docs.push({ application_id: appId, document_type: "proof_of_income", url: proofPath,         file_name: documentFiles.proofOfIncome?.name ?? null });
   if (docs.length > 0) {
     const { error: docError } = await supabase.from("application_document").insert(docs);
     if (docError) console.warn("Document insert failed:", docError.message);
   }
 
-  return { data, error: null };
+  return { data: { id: appId }, error: null };
 }
 
 function maskIdNumber(raw) {

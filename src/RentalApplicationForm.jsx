@@ -80,7 +80,7 @@ export default function RentalApplicationForm() {
   const navigate = useNavigate();
   const { id: listingId } = useParams();
   const [searchParams] = useSearchParams();
-  const { user, profile, isAuthenticated } = useAuth();
+  const { user, profile, isAuthenticated, loading: authLoading } = useAuth();
 
   const [listing, setListing] = useState(null);
   const [listingLoading, setListingLoading] = useState(true);
@@ -124,8 +124,8 @@ export default function RentalApplicationForm() {
 
   // Redirect unauthenticated users
   useEffect(() => {
-    if (isAuthenticated === false) navigate("/login");
-  }, [isAuthenticated, navigate]);
+    if (!authLoading && isAuthenticated === false) navigate("/login");
+  }, [authLoading, isAuthenticated, navigate]);
 
   // Identity-verification gate. Mirrors the server-side gate in
   // submitApplication so the tenant doesn't waste time filling out a form

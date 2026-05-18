@@ -101,7 +101,7 @@ const HISTORY_PAGE_SIZE = 20;
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function MyPayments() {
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
 
   const [activeTab,  setActiveTab]  = useState("overview");
   const [loading,    setLoading]    = useState(true);
@@ -127,8 +127,8 @@ export default function MyPayments() {
   const initialLoaded = useRef(false);
 
   useEffect(() => {
-    if (isAuthenticated === false) navigate("/login");
-  }, [isAuthenticated, navigate]);
+    if (!authLoading && isAuthenticated === false) navigate("/login");
+  }, [authLoading, isAuthenticated, navigate]);
 
   useEffect(() => {
     if (!user?.id) { setHasAnyPaymentEver(false); return; }
@@ -816,12 +816,23 @@ function Mini({ label, value }) {
   );
 }
 
+// First-of-month → "May 2026" label for billing_month chips.
+const BILLING_MONTH_FMT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtBillingMonth(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return `${BILLING_MONTH_FMT[d.getMonth()]} ${d.getFullYear()}`;
+}
+
 function TxRow({ payment, last, onOpen }) {
   const status = (payment.status ?? "succeeded").toLowerCase();
   const badge = STATUS_BADGE[status] ?? STATUS_BADGE.failed;
   const cents = Number(payment.amount_cents) || 0;
   const title = payment.contract?.listings?.title || "Listing";
   const clickable = !!payment.contract_id;
+  const recordedByLandlord = !!payment.recorded_by;
+  const billingLabel = fmtBillingMonth(payment.billing_month);
 
   // Legacy Stripe rows have no method_type — they predate the ledger.
   const methodLabel = payment.method_type
@@ -852,6 +863,12 @@ function TxRow({ payment, last, onOpen }) {
           <p className="font-body text-xs text-vxr-text-sub truncate">
             {fmtDate(payment.paid_at)} · {methodLabel}
           </p>
+          {(recordedByLandlord || billingLabel) && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {billingLabel && <Badge tone="neutral">{billingLabel}</Badge>}
+              {recordedByLandlord && <Badge tone="info">Recorded by landlord</Badge>}
+            </div>
+          )}
         </div>
         <div className="text-right shrink-0">
           <p className="font-mono text-sm font-bold text-vxr-text tabular-nums">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Home, Lock, CreditCard, ShieldCheck,
@@ -25,11 +25,35 @@ import {
 
 const EWALLET_TYPES = ["gcash", "paymaya", "grab_pay"];
 
+// Coerce 'YYYY-MM' or 'YYYY-MM-DD' to first-of-month, else null.
+function normalizeMonthParam(raw) {
+  if (!raw) return null;
+  const m = /^(\d{4})-(\d{2})(?:-\d{2})?$/.exec(String(raw).trim());
+  return m ? `${m[1]}-${m[2]}-01` : null;
+}
+
+const MONTH_NAMES_FMT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function monthLabel(iso) {
+  if (!iso) return "";
+  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`);
+  if (isNaN(d.getTime())) return "";
+  return `${MONTH_NAMES_FMT[d.getMonth()]} ${d.getFullYear()}`;
+}
+
 export default function ContractPayment() {
   const navigate = useNavigate();
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
+
+  // ?month=YYYY-MM switches the page into recurring-rent mode (rent only,
+  // no deposit/advance, tagged with billing_month). Omitting it keeps the
+  // original move-in behaviour.
+  const billingMonth = useMemo(
+    () => normalizeMonthParam(searchParams.get("month")),
+    [searchParams],
+  );
+  const isMonthly = !!billingMonth;
 
   const [contract, setContract] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -37,6 +61,7 @@ export default function ContractPayment() {
   const [intent, setIntent] = useState(null);
   const [intentError, setIntentError] = useState(null);
   const [savedMethods, setSavedMethods] = useState([]);
+  const recordedPiRef = useRef(null);
 
   // ─── Load contract + self-heal zero amounts ─────────────────────────────
   useEffect(() => {
@@ -64,10 +89,13 @@ export default function ContractPayment() {
       }
 
       setContract(c);
-      if (c.payment) setStep("success");
+      // In monthly mode the move-in payment is already on c.payment, so
+      // don't auto-jump to the success screen — that page is for THIS
+      // month's flow, which is still 'form'.
+      if (!isMonthly && c.payment) setStep("success");
       setLoading(false);
     });
-  }, [id]);
+  }, [id, isMonthly]);
 
   // ─── Load saved methods for the picker ───────────────────────────────────
   useEffect(() => {
@@ -78,25 +106,31 @@ export default function ContractPayment() {
   const status = getContractStatus(contract);
   const total = useMemo(() => {
     if (!contract) return 0;
+    if (isMonthly) return Number(contract.monthlyRent);
     return Number(contract.monthlyRent) + Number(contract.securityDeposit) + Number(contract.advanceRent);
-  }, [contract]);
+  }, [contract, isMonthly]);
 
   const isTenant = !!(user?.id && contract?.tenantId && user.id === contract.tenantId);
+  // Move-in: blocked once status='paid'. Monthly: requires status='paid'
+  // (post move-in) — Edge Function re-checks both.
+  const statusOkForCheckout = isMonthly
+    ? (contract?.status === "paid" || contract?.status === "terminating" || contract?.status === "expiring")
+    : status !== "paid";
   const eligibleForCheckout =
-    !!contract && isTenant && total > 0 && status !== "paid" && step !== "success";
+    !!contract && isTenant && total > 0 && statusOkForCheckout && step !== "success";
 
   // ─── Ask the Edge Function for a PaymentIntent once we know who's paying ─
   useEffect(() => {
     if (!eligibleForCheckout) return;
     let cancelled = false;
     setIntentError(null);
-    createPaymongoPaymentIntent(id).then((res) => {
+    createPaymongoPaymentIntent(id, isMonthly ? { billingMonth } : {}).then((res) => {
       if (cancelled) return;
       if (res?.error) { setIntentError(res.error); return; }
       setIntent(res);
     });
     return () => { cancelled = true; };
-  }, [id, eligibleForCheckout]);
+  }, [id, eligibleForCheckout, isMonthly, billingMonth]);
 
   // ─── Redirect-back from PayMongo e-wallet / 3DS ──────────────────────────
   // PayMongo appends ?payment_intent_id=... to the return_url after the
@@ -105,9 +139,17 @@ export default function ContractPayment() {
   useEffect(() => {
     const piParam = searchParams.get("payment_intent_id");
     if (!piParam || !contract) return;
+    if (recordedPiRef.current === piParam) return;
+    recordedPiRef.current = piParam;
+
     setStep("processing");
     recordPaymongoPayment(id, piParam).then((res) => {
-      if (res?.error) { setIntentError(res.error); setStep("form"); return; }
+      if (res?.error) {
+        recordedPiRef.current = null;
+        setIntentError(res.error);
+        setStep("form");
+        return;
+      }
       setContract((prev) => prev && {
         ...prev,
         payment: { transactionId: piParam, amount: total, paidAt: new Date().toISOString() },
@@ -171,14 +213,19 @@ export default function ContractPayment() {
 
   return (
     <div className="w-full min-h-screen bg-vxr-bg flex flex-col">
-      <AppHeader showBack onBack={() => navigate(`/contract/${id}`)} />
+      <AppHeader
+        showBack
+        onBack={() => navigate(isMonthly ? "/my-rental" : `/contract/${id}`)}
+      />
 
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 lg:px-6 py-8">
         {step === "success" ? (
           <SuccessView
             contract={contract}
             total={total}
-            onBack={() => navigate(`/contract/${id}`)}
+            billingMonth={billingMonth}
+            isMonthly={isMonthly}
+            onBack={() => navigate(isMonthly ? "/my-rental" : `/contract/${id}`)}
             onHome={() => navigate("/home2")}
           />
         ) : (
@@ -186,7 +233,9 @@ export default function ContractPayment() {
             <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8">
               <div className="flex items-start justify-between mb-6">
                 <div>
-                  <h1 className="text-xl font-bold text-slate-900 tracking-tight">Pay your move-in</h1>
+                  <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                    {isMonthly ? `Pay rent for ${monthLabel(billingMonth)}` : "Pay your move-in"}
+                  </h1>
                   <p className="text-sm text-slate-500 mt-0.5">
                     Secure payment for {contract.tenantName}
                   </p>
@@ -217,7 +266,10 @@ export default function ContractPayment() {
                   total={total}
                   savedMethods={savedMethods}
                   onSavedMethodsChange={setSavedMethods}
-                  returnUrl={`${window.location.origin}/contract/${id}/pay`}
+                  userEmail={user?.email ?? ""}
+                  returnUrl={`${window.location.origin}/contract/${id}/pay${
+                    isMonthly ? `?month=${String(billingMonth).slice(0, 7)}` : ""
+                  }`}
                   onProcessing={() => setStep("processing")}
                   onError={(msg) => { setIntentError(msg); setStep("form"); }}
                   onSuccess={(piId) => {
@@ -242,7 +294,12 @@ export default function ContractPayment() {
             </section>
 
             <aside className="lg:sticky lg:top-24 self-start">
-              <OrderSummary contract={contract} total={total} />
+              <OrderSummary
+                contract={contract}
+                total={total}
+                billingMonth={billingMonth}
+                isMonthly={isMonthly}
+              />
             </aside>
           </div>
         )}
@@ -255,7 +312,7 @@ export default function ContractPayment() {
 
 function CheckoutForm({
   contractId, paymentIntentId, total, savedMethods, onSavedMethodsChange,
-  returnUrl, onProcessing, onError, onSuccess,
+  userEmail = "", returnUrl, onProcessing, onError, onSuccess,
 }) {
   // Selected option in the picker.
   //   { kind: 'saved',  id: <payment_methods.id> }
@@ -280,7 +337,7 @@ function CheckoutForm({
 
   const [card, setCard] = useState({ number: "", expMonth: "", expYear: "", cvc: "" });
   const [billingName, setBillingName] = useState("");
-  const [billingEmail, setBillingEmail] = useState("");
+  const [billingEmail, setBillingEmail] = useState(userEmail);
   const [billingPhone, setBillingPhone] = useState("");
 
   // Pre-fill billing name from the picked saved method whenever it
@@ -331,6 +388,24 @@ function CheckoutForm({
       setLocalError("Billing name is required.");
       return;
     }
+
+    // PayMongo requires billing.email and billing.phone for e-wallet /
+    // bank payment methods (gcash, paymaya, grab_pay, bank_transfer).
+    // Cards don't require them.
+    const isCard = picked.kind === "new" && newType === "card";
+    if (!isCard) {
+      const email = billingEmail.trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        setLocalError("A valid billing email is required for this payment method.");
+        return;
+      }
+      const phone = billingPhone.trim().replace(/\s+/g, "");
+      if (!phone || !/^(\+?63|0)?9\d{9}$/.test(phone)) {
+        setLocalError("A valid Philippine mobile number is required (e.g. 09171234567).");
+        return;
+      }
+    }
+
     const billing = {
       name:  billingName.trim(),
       email: billingEmail.trim() || undefined,
@@ -450,6 +525,7 @@ function CheckoutForm({
           name={billingName}    setName={setBillingName}
           email={billingEmail}  setEmail={setBillingEmail}
           phone={billingPhone}  setPhone={setBillingPhone}
+          contactRequired={!(picked.kind === "new" && newType === "card")}
         />
       )}
 
@@ -667,7 +743,9 @@ function BankTransferNote() {
   );
 }
 
-function BillingFields({ name, setName, email, setEmail, phone, setPhone }) {
+function BillingFields({ name, setName, email, setEmail, phone, setPhone, contactRequired }) {
+  const emailPh = contactRequired ? "Email *" : "Email (optional)";
+  const phonePh = contactRequired ? "Phone (e.g. 09171234567) *" : "Phone (optional)";
   return (
     <div className="space-y-3">
       <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
@@ -681,13 +759,16 @@ function BillingFields({ name, setName, email, setEmail, phone, setPhone }) {
       />
       <div className="grid grid-cols-2 gap-3">
         <input
-          placeholder="Email (optional)"
+          type="email"
+          inputMode="email"
+          placeholder={emailPh}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
         />
         <input
-          placeholder="Phone (optional)"
+          inputMode="tel"
+          placeholder={phonePh}
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF7043]/30"
@@ -708,13 +789,13 @@ function ErrorBlock({ message }) {
   );
 }
 
-function OrderSummary({ contract, total }) {
+function OrderSummary({ contract, total, billingMonth, isMonthly }) {
   const meta = CONTRACT_TYPES[contract.type];
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
       <div className="px-5 pt-5 pb-3">
         <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
-          Move-in Summary
+          {isMonthly ? `Rent for ${monthLabel(billingMonth)}` : "Move-in Summary"}
         </div>
         <div className="text-base font-bold text-slate-900">
           {contract.propertyType} · {contract.propertyAddress}
@@ -727,9 +808,15 @@ function OrderSummary({ contract, total }) {
       </div>
 
       <div className="px-5 py-4 border-t border-slate-100 space-y-2.5">
-        <Line label="First month rent" value={contract.monthlyRent} />
-        <Line label="Security deposit" value={contract.securityDeposit} />
-        <Line label="Advance rent" value={contract.advanceRent} />
+        {isMonthly ? (
+          <Line label={`Monthly rent · ${monthLabel(billingMonth)}`} value={contract.monthlyRent} />
+        ) : (
+          <>
+            <Line label="First month rent" value={contract.monthlyRent} />
+            <Line label="Security deposit" value={contract.securityDeposit} />
+            <Line label="Advance rent" value={contract.advanceRent} />
+          </>
+        )}
       </div>
 
       <div className="px-5 py-4 border-t border-slate-100 bg-slate-50">
@@ -787,7 +874,7 @@ function ProcessingState() {
   );
 }
 
-function SuccessView({ contract, total, onBack, onHome }) {
+function SuccessView({ contract, total, billingMonth, isMonthly, onBack, onHome }) {
   const p = contract.payment;
   return (
     <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 p-8 md:p-10">
@@ -797,7 +884,9 @@ function SuccessView({ contract, total, onBack, onHome }) {
         </div>
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Payment successful</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Welcome home, {contract.tenantName?.split(" ")[0] || "tenant"}. Your contract is now active.
+          {isMonthly
+            ? `Rent for ${monthLabel(billingMonth)} is paid in full.`
+            : `Welcome home, ${contract.tenantName?.split(" ")[0] || "tenant"}. Your contract is now active.`}
         </p>
       </div>
 
@@ -812,9 +901,15 @@ function SuccessView({ contract, total, onBack, onHome }) {
         </div>
 
         <div className="space-y-2.5">
-          <Line label="First month rent" value={contract.monthlyRent} />
-          <Line label="Security deposit" value={contract.securityDeposit} />
-          <Line label="Advance rent" value={contract.advanceRent} />
+          {isMonthly ? (
+            <Line label={`Monthly rent · ${monthLabel(billingMonth)}`} value={contract.monthlyRent} />
+          ) : (
+            <>
+              <Line label="First month rent" value={contract.monthlyRent} />
+              <Line label="Security deposit" value={contract.securityDeposit} />
+              <Line label="Advance rent" value={contract.advanceRent} />
+            </>
+          )}
         </div>
 
         <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-between">
@@ -852,7 +947,7 @@ function SuccessView({ contract, total, onBack, onHome }) {
           className="h-11 rounded-lg border border-slate-200 text-slate-700 font-semibold hover:bg-slate-50 transition text-sm inline-flex items-center justify-center gap-2"
         >
           <FileText size={14} />
-          View Contract
+          {isMonthly ? "Back to Dashboard" : "View Contract"}
         </button>
         <button
           onClick={onHome}

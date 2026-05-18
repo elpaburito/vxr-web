@@ -31,6 +31,7 @@ ALTER TABLE public.contract
     'terminating','terminated','expiring','ended','closed'
   ));
 
+ALTER TABLE public.contract DROP CONSTRAINT IF EXISTS contract_terminated_by_check;
 ALTER TABLE public.contract
   ADD CONSTRAINT contract_terminated_by_check CHECK (
     terminated_by IS NULL OR terminated_by IN ('tenant','landlord','mutual','expired','eviction')

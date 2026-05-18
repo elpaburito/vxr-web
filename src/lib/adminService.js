@@ -33,10 +33,13 @@ export async function fetchAdminStats() {
 
 // ---------- Users ----------
 
-export async function fetchUsers({ search = "", role = "" } = {}) {
+export async function fetchUsers({ search = "", role = "", suspended = "" } = {}) {
   let q = supabase
     .from("profiles")
-    .select("id, email, full_name, phone, role, is_landlord, is_verified, created_at")
+    .select(
+      "id, email, full_name, phone, role, is_landlord, is_verified, " +
+      "is_suspended, suspended_at, suspension_reason, created_at"
+    )
     .order("created_at", { ascending: false })
     .limit(200);
 
@@ -44,6 +47,8 @@ export async function fetchUsers({ search = "", role = "" } = {}) {
     q = q.or(`email.ilike.%${search}%,full_name.ilike.%${search}%`);
   }
   if (role) q = q.eq("role", role);
+  if (suspended === "yes") q = q.eq("is_suspended", true);
+  else if (suspended === "no") q = q.eq("is_suspended", false);
 
   const { data, error } = await T(q, "fetch users");
   if (error) throw error;
@@ -64,6 +69,41 @@ export async function setUserVerified(userId, verified) {
     "update verification"
   );
   if (error) throw error;
+}
+
+/**
+ * Suspend or unsuspend a user. Suspended users keep their session and can
+ * sign in (to see the suspension notice), but the RESTRICTIVE RLS policies
+ * in admin_user_suspension.sql block writes to listings, application,
+ * payment_methods, chat_message, and maintenance_report.
+ *
+ * On suspend, the reason is persisted on the profile AND mirrored to the
+ * audit log so the reason text shows up next to the auto-emitted
+ * profiles.suspend action.
+ */
+export async function setUserSuspended(userId, suspended, reason = null) {
+  const patch = {
+    is_suspended: !!suspended,
+    suspended_at: suspended ? new Date().toISOString() : null,
+    suspension_reason: suspended ? (reason || null) : null,
+  };
+  const { error } = await T(
+    supabase.from("profiles").update(patch).eq("id", userId),
+    suspended ? "suspend user" : "unsuspend user"
+  );
+  if (error) throw error;
+  if (suspended && reason && reason.trim()) {
+    try {
+      await logAdminAction({
+        action: "profiles.suspend.reason",
+        entityType: "profiles",
+        entityId: userId,
+        reason: reason.trim(),
+      });
+    } catch (e) {
+      console.warn("[admin] could not record suspension reason:", e?.message);
+    }
+  }
 }
 
 // ---------- Listings ----------
@@ -298,6 +338,46 @@ export async function fetchAllApplications({ status = "" } = {}) {
   return data ?? [];
 }
 
+/**
+ * Admin-side approve/reject for applications. The application-table
+ * trigger automatically records an `application.approved` / `application.rejected`
+ * row in admin_audit_log; we additionally call log_admin_action with the
+ * reason text so it ends up on the same audit row's reason field.
+ */
+export async function approveApplication(applicationId) {
+  const { error } = await T(
+    supabase
+      .from("application")
+      .update({ status: "approved", reviewed_at: new Date().toISOString() })
+      .eq("id", applicationId),
+    "approve application"
+  );
+  if (error) throw error;
+}
+
+export async function rejectApplication(applicationId, reason = null) {
+  const { error } = await T(
+    supabase
+      .from("application")
+      .update({ status: "rejected", reviewed_at: new Date().toISOString() })
+      .eq("id", applicationId),
+    "reject application"
+  );
+  if (error) throw error;
+  if (reason && reason.trim()) {
+    try {
+      await logAdminAction({
+        action: "application.rejected.reason",
+        entityType: "application",
+        entityId: applicationId,
+        reason: reason.trim(),
+      });
+    } catch (e) {
+      console.warn("[admin] could not record rejection reason:", e?.message);
+    }
+  }
+}
+
 // ---------- CMS: Pages ----------
 
 export async function fetchPages() {
@@ -420,4 +500,310 @@ export async function saveFaq(item) {
 export async function deleteFaq(id) {
   const { error } = await T(supabase.from("cms_faq").delete().eq("id", id), "delete faq");
   if (error) throw error;
+}
+
+// ---------- Payments oversight ----------
+
+/**
+ * Admin-side ledger view of every PayMongo / offline payment attempt.
+ * Returns the most recent rows; cursor-paginated by created_at.
+ */
+export async function fetchAdminPayments({
+  search = "",
+  status = "",
+  methodType = "",
+  beforeIso = "",
+  limit = 50,
+} = {}) {
+  let q = supabase
+    .from("payment_transactions")
+    .select(
+      "id, contract_id, user_id, payment_method_id, paymongo_payment_intent_id, paymongo_payment_id, " +
+      "amount_cents, currency, status, method_type, brand, last4, billing_name, " +
+      "failure_reason, billing_month, recorded_by, note, created_at, updated_at"
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (status) q = q.eq("status", status);
+  if (methodType) q = q.eq("method_type", methodType);
+  if (beforeIso) q = q.lt("created_at", beforeIso);
+  if (search) {
+    const s = search.replace(/,/g, " ");
+    q = q.or(
+      `paymongo_payment_intent_id.ilike.%${s}%,paymongo_payment_id.ilike.%${s}%,billing_name.ilike.%${s}%,failure_reason.ilike.%${s}%`
+    );
+  }
+
+  const { data, error } = await T(q, "fetch admin payments");
+  if (error) throw error;
+  return data ?? [];
+}
+
+/**
+ * Aggregate totals for the dashboard header.
+ *   - succeeded count (last 30 days)
+ *   - failed count (last 30 days)
+ *   - pending/requires_action count (current)
+ *   - gross PHP succeeded (last 30 days)
+ */
+export async function fetchPaymentSummary() {
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const [succeeded, failed, pending, grossRows] = await Promise.all([
+    T(
+      supabase.from("payment_transactions")
+        .select("*", { count: "exact", head: true })
+        .eq("status", "succeeded")
+        .gte("created_at", since),
+      "succeeded count"
+    ),
+    T(
+      supabase.from("payment_transactions")
+        .select("*", { count: "exact", head: true })
+        .eq("status", "failed")
+        .gte("created_at", since),
+      "failed count"
+    ),
+    T(
+      supabase.from("payment_transactions")
+        .select("*", { count: "exact", head: true })
+        .in("status", ["pending", "requires_action"]),
+      "pending count"
+    ),
+    T(
+      supabase.from("payment_transactions")
+        .select("amount_cents")
+        .eq("status", "succeeded")
+        .gte("created_at", since)
+        .limit(5000),
+      "gross sum rows"
+    ),
+  ]);
+
+  const grossCents = (grossRows?.data ?? [])
+    .reduce((sum, r) => sum + (Number(r.amount_cents) || 0), 0);
+
+  return {
+    succeeded: succeeded?.count ?? 0,
+    failed: failed?.count ?? 0,
+    pending: pending?.count ?? 0,
+    grossPhp: grossCents / 100,
+  };
+}
+
+/**
+ * Mark a transaction as refunded in the local ledger.
+ * NOTE: this does NOT call PayMongo's refund API — it only flips the
+ * status on our side so the admin ledger reflects reality once a refund
+ * has been issued through PayMongo's dashboard. The DB trigger logs the
+ * status change; we additionally call log_admin_action with the reason
+ * so the audit row carries why.
+ */
+export async function markTransactionRefunded(transactionId, reason = null) {
+  const { error } = await T(
+    supabase
+      .from("payment_transactions")
+      .update({ status: "refunded", updated_at: new Date().toISOString() })
+      .eq("id", transactionId),
+    "mark transaction refunded"
+  );
+  if (error) throw error;
+  if (reason && reason.trim()) {
+    try {
+      await logAdminAction({
+        action: "payment_transactions.refund.reason",
+        entityType: "payment_transactions",
+        entityId: transactionId,
+        reason: reason.trim(),
+      });
+    } catch (e) {
+      console.warn("[admin] could not record refund reason:", e?.message);
+    }
+  }
+}
+
+// ---------- Reports / disputes ----------
+
+/**
+ * Admin queue of every tenant-filed maintenance report.
+ * Joined with a small slice of profiles/listing context for display.
+ */
+export async function fetchAdminReports({
+  search = "",
+  status = "",
+  category = "",
+  limit = 100,
+} = {}) {
+  let q = supabase
+    .from("maintenance_report")
+    .select(
+      "id, tenant_id, contract_id, listing_id, title, description, category, status, " +
+      "landlord_notes, admin_notes, escalated_at, resolved_at, created_at, updated_at"
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (status) q = q.eq("status", status);
+  if (category) q = q.eq("category", category);
+  if (search) {
+    const s = search.replace(/,/g, " ");
+    q = q.or(`title.ilike.%${s}%,description.ilike.%${s}%`);
+  }
+
+  const { data, error } = await T(q, "fetch admin reports");
+  if (error) throw error;
+  const rows = data ?? [];
+  if (rows.length === 0) return [];
+
+  // Hydrate tenant + listing for display
+  const tenantIds = [...new Set(rows.map((r) => r.tenant_id).filter(Boolean))];
+  const listingIds = [...new Set(rows.map((r) => r.listing_id).filter(Boolean))];
+
+  const [tenants, listings] = await Promise.all([
+    tenantIds.length
+      ? T(supabase.from("profiles").select("id, full_name, email").in("id", tenantIds), "fetch report tenants")
+      : Promise.resolve({ data: [] }),
+    listingIds.length
+      ? T(supabase.from("listings").select("id, title").in("id", listingIds), "fetch report listings")
+      : Promise.resolve({ data: [] }),
+  ]);
+
+  const tenantById = new Map((tenants.data ?? []).map((p) => [p.id, p]));
+  const listingById = new Map((listings.data ?? []).map((l) => [l.id, l]));
+
+  return rows.map((r) => ({
+    ...r,
+    tenant: tenantById.get(r.tenant_id) || null,
+    listing: listingById.get(r.listing_id) || null,
+  }));
+}
+
+export async function updateReportStatus(reportId, status, reason = null) {
+  const patch = { status, updated_at: new Date().toISOString() };
+  if (status === "resolved") patch.resolved_at = new Date().toISOString();
+  const { error } = await T(
+    supabase.from("maintenance_report").update(patch).eq("id", reportId),
+    "update report status"
+  );
+  if (error) throw error;
+  if (reason && reason.trim()) {
+    try {
+      await logAdminAction({
+        action: `maintenance_report.${status}.reason`,
+        entityType: "maintenance_report",
+        entityId: reportId,
+        reason: reason.trim(),
+      });
+    } catch (e) {
+      console.warn("[admin] could not record report reason:", e?.message);
+    }
+  }
+}
+
+export async function escalateReport(reportId, notes = null) {
+  const patch = {
+    escalated_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  if (notes != null) patch.admin_notes = notes;
+  const { error } = await T(
+    supabase.from("maintenance_report").update(patch).eq("id", reportId),
+    "escalate report"
+  );
+  if (error) throw error;
+}
+
+export async function saveReportAdminNotes(reportId, notes) {
+  const { error } = await T(
+    supabase
+      .from("maintenance_report")
+      .update({ admin_notes: notes ?? "", updated_at: new Date().toISOString() })
+      .eq("id", reportId),
+    "save admin notes"
+  );
+  if (error) throw error;
+}
+
+// ---------- Audit log ----------
+
+/**
+ * Cursor-paginated fetch of the admin audit log.
+ * @param {object} opts
+ * @param {string} [opts.search]      free-text search against action, entity_type, actor_email
+ * @param {string} [opts.action]      exact action match (e.g. "profiles.role_change")
+ * @param {string} [opts.entityType]  exact entity_type match
+ * @param {string} [opts.beforeIso]   ISO timestamp; return rows with created_at < beforeIso (cursor)
+ * @param {number} [opts.limit]       page size (default 50)
+ */
+export async function fetchAuditLog({
+  search = "",
+  action = "",
+  entityType = "",
+  beforeIso = "",
+  limit = 50,
+} = {}) {
+  let q = supabase
+    .from("admin_audit_log")
+    .select("id, actor_id, actor_email, action, entity_type, entity_id, before, after, reason, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (action) q = q.eq("action", action);
+  if (entityType) q = q.eq("entity_type", entityType);
+  if (beforeIso) q = q.lt("created_at", beforeIso);
+  if (search) {
+    const s = search.replace(/,/g, " ");
+    q = q.or(
+      `action.ilike.%${s}%,entity_type.ilike.%${s}%,actor_email.ilike.%${s}%,entity_id.ilike.%${s}%`
+    );
+  }
+
+  const { data, error } = await T(q, "fetch audit log");
+  if (error) throw error;
+  return data ?? [];
+}
+
+/**
+ * Distinct action labels for the filter dropdown.
+ * Cheap because the action_idx is small.
+ */
+export async function fetchAuditActions() {
+  const { data, error } = await T(
+    supabase
+      .from("admin_audit_log")
+      .select("action")
+      .order("action")
+      .limit(500),
+    "fetch audit actions"
+  );
+  if (error) throw error;
+  return [...new Set((data ?? []).map((r) => r.action))];
+}
+
+/**
+ * Manually record an admin action (with optional reason / metadata).
+ * Use for events that don't naturally fire a row-update trigger
+ * (e.g. "viewed payment X for refund decision", "exported user CSV").
+ */
+export async function logAdminAction({
+  action,
+  entityType,
+  entityId = null,
+  reason = null,
+  metadata = null,
+}) {
+  if (!action || !entityType) throw new Error("action and entityType are required");
+  const { data, error } = await T(
+    supabase.rpc("log_admin_action", {
+      p_action: action,
+      p_entity_type: entityType,
+      p_entity_id: entityId == null ? null : String(entityId),
+      p_reason: reason,
+      p_metadata: metadata,
+    }),
+    "log admin action"
+  );
+  if (error) throw error;
+  return data;
 }

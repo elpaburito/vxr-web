@@ -82,12 +82,15 @@ function FilterSelect({ value, options, onChange, placeholder }) {
 function ReportCard({ report, asLandlord, onRefresh }) {
   const typeMeta   = TYPE_META[report.type] ?? TYPE_META.other;
   const statusMeta = STATUS_META[report.status] ?? STATUS_META.open;
-  const listing    = report.listings ?? {};
-  const profile    = report.tenant_profile ?? {};
-  const tenantName = profile.full_name ?? "";
-  const subtitle   = asLandlord && tenantName
-    ? `${tenantName} · ${listing.title ?? ""}`
-    : (listing.title ?? "—");
+  const listing         = report.listings ?? {};
+  const tenantProfile   = report.tenant_profile ?? {};
+  const landlordProfile = report.landlord_profile ?? {};
+  const tenantName      = tenantProfile.full_name ?? "";
+  const landlordName    = landlordProfile.full_name ?? "";
+  const propertyLabel   = listing.title || "";
+  const subtitle = asLandlord
+    ? ([tenantName, propertyLabel].filter(Boolean).join(" · ") || "—")
+    : ([landlordName, propertyLabel].filter(Boolean).join(" · ") || "—");
 
   const [respondOpen, setRespondOpen] = useState(false);
   const [responseText, setResponseText] = useState(report.landlord_response ?? "");
@@ -131,7 +134,7 @@ function ReportCard({ report, asLandlord, onRefresh }) {
         <Badge tone={PRIORITY_TONE[report.priority] ?? "warning"}>
           {cap(report.priority ?? "medium")}
         </Badge>
-        <Chip>{typeMeta.label}</Chip>
+        <Chip label={typeMeta.label} />
         <span className="ml-auto font-body text-[11px] text-vxr-text-sub">
           {fmtDate(report.created_at)}
         </span>
@@ -230,14 +233,27 @@ function NewReportModal({ contract, onClose, onSuccess }) {
   const [err, setErr]       = useState("");
   const { user } = useAuth();
 
-  const listingTitle = contract?.listings?.title ?? "Your rental";
+  const listingTitle =
+    contract?.listings?.title ||
+    contract?.property_address ||
+    contract?.propertyAddress ||
+    "Your rental";
   const contractId   = contract?.id;
+  // Active contract may come back as either the normalized (camelCase) shape
+  // or the merged raw row (snake_case) depending on caller — accept both.
   const listingId    = contract?.listingId ?? contract?.listing_id;
-  const landlordId   = contract?.listings?.landlord_id ?? contract?.landlordId;
+  const landlordId   =
+    contract?.listings?.landlord_id ??
+    contract?.landlord_id ??
+    contract?.landlordId;
 
   async function handleSubmit(e) {
     e.preventDefault();
     if (!title.trim()) { setErr("Title is required."); return; }
+    if (!contractId || !listingId || !landlordId) {
+      setErr("Your rental details are incomplete — refresh the page and try again.");
+      return;
+    }
     setSaving(true);
     setErr("");
     const { error } = await submitReport({
@@ -251,7 +267,11 @@ function NewReportModal({ contract, onClose, onSuccess }) {
       priority,
     });
     setSaving(false);
-    if (error) { setErr("Failed to submit report. Please try again."); return; }
+    if (error) {
+      console.error("[submitReport] failed:", error);
+      setErr(error.message || error.details || "Failed to submit report. Please try again.");
+      return;
+    }
     onSuccess();
   }
 
@@ -343,7 +363,7 @@ function NewReportModal({ contract, onClose, onSuccess }) {
 // ─── ReportManagement page ───────────────────────────────────────────────────
 export default function ReportManagement() {
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
 
   const [loading,        setLoading]        = useState(true);
   const [isLandlord,     setIsLandlord]     = useState(false);
@@ -359,24 +379,38 @@ export default function ReportManagement() {
   const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated === false) navigate("/login");
-  }, [isAuthenticated, navigate]);
+    if (!authLoading && isAuthenticated === false) navigate("/login");
+  }, [authLoading, isAuthenticated, navigate]);
 
   const load = useCallback(async () => {
     if (!user?.id) return;
     setLoading(true);
 
-    const [landlordFlag, { data: contract }, { data: mine }, { data: incoming }] =
+    const [landlordFlag, { data: contract }, { data: incoming }] =
       await Promise.all([
         hasUserListings(user.id),
         fetchMyActiveContract(user.id),
-        fetchMyReports(user.id),
         fetchLandlordReportsForPage(user.id),
       ]);
 
+    // Scope "My reports" to the current rental so a tenant with a previous
+    // rental doesn't see stale reports here.
+    const { data: mine } = contract?.id
+      ? await fetchMyReports(user.id, contract.id)
+      : { data: [] };
+
     setIsLandlord(landlordFlag);
     setActiveContract(contract ?? null);
-    setMyReports(mine ?? []);
+    // fetchMyReports is scoped to one contract, so every row's listing is
+    // the same as activeContract's — use it as a fallback when the report's
+    // own listings embed came back empty (legacy null listing_id, etc.).
+    const fallbackListing = contract?.listings ?? null;
+    setMyReports(
+      (mine ?? []).map((r) => ({
+        ...r,
+        listings: r.listings?.title ? r.listings : (fallbackListing ?? r.listings ?? null),
+      })),
+    );
     setInReports(incoming ?? []);
 
     if (!contract && landlordFlag) setTab("incoming");

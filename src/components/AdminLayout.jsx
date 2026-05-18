@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard, FileText, LogOut, Home, ShieldCheck,
+  LayoutDashboard, FileText, LogOut, Home, ShieldCheck, History, CreditCard, Flag,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { Sidebar, Avatar } from "./vxr";
@@ -8,7 +8,10 @@ import NotificationBell from "./NotificationBell.jsx";
 
 const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", path: "/admin", icon: LayoutDashboard },
-  { id: "cms", label: "Content Management", path: "/admin/cms", icon: FileText },
+  { id: "payments",  label: "Payments", path: "/admin/payments", icon: CreditCard },
+  { id: "reports",   label: "Reports", path: "/admin/reports", icon: Flag },
+  { id: "cms",       label: "Content Management", path: "/admin/cms", icon: FileText },
+  { id: "audit",     label: "Audit Log", path: "/admin/audit", icon: History },
 ];
 
 export default function AdminLayout({ children, title, subtitle, actions }) {
@@ -19,9 +22,15 @@ export default function AdminLayout({ children, title, subtitle, actions }) {
   const activeId =
     location.pathname === "/admin"
       ? "dashboard"
-      : location.pathname.startsWith("/admin/cms")
-        ? "cms"
-        : null;
+      : location.pathname.startsWith("/admin/payments")
+        ? "payments"
+        : location.pathname.startsWith("/admin/reports")
+          ? "reports"
+          : location.pathname.startsWith("/admin/cms")
+            ? "cms"
+            : location.pathname.startsWith("/admin/audit")
+              ? "audit"
+              : null;
 
   const handleLogout = async () => {
     try {

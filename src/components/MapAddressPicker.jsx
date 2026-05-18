@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleMap, Marker, useJsApiLoader } from "@react-google-maps/api";
-import { Loader2, MapPin, X, Crosshair } from "lucide-react";
+import { Loader2, MapPin, X, Crosshair, AlertTriangle } from "lucide-react";
 import { Button } from "./vxr";
 
-const DEFAULT_CENTER = { lat: 14.5995, lng: 120.9842 };
+// Country-level viewport hint only — never used as a marker position.
+const PH_VIEWPORT_CENTER = { lat: 12.8797, lng: 121.7740 };
+const LOW_ACCURACY_THRESHOLD_M = 5000;
 
 const containerStyle = { width: "100%", height: "100%" };
 
 const MAP_LIBRARIES = ["places"];
+
+function geoErrorMessage(err) {
+  if (!err) return "Could not get your location.";
+  switch (err.code) {
+    case 1: return "Location permission denied. Enable it in your browser settings.";
+    case 2: return "Location unavailable. Check that location services are turned on.";
+    case 3: return "Could not get a precise location in time. Try again or pick on the map.";
+    default: return err.message || "Could not get your location.";
+  }
+}
 
 function parseComponents(components) {
   let city = "", province = "", barangay = "", postalCode = "";
@@ -32,14 +44,19 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
     libraries: MAP_LIBRARIES,
   });
 
-  const [center, setCenter] = useState(initialPosition ?? DEFAULT_CENTER);
-  const [pos, setPos] = useState(initialPosition ?? DEFAULT_CENTER);
-  const [address, setAddress] = useState("Move the map to pick a location");
+  const [center, setCenter] = useState(initialPosition ?? PH_VIEWPORT_CENTER);
+  // `pos` is null until the user (or geolocation) has chosen a real location.
+  const [pos, setPos] = useState(initialPosition ?? null);
+  const [address, setAddress] = useState("Move the map or use your location to pick a spot");
   const [parts, setParts] = useState({ city: "", province: "", barangay: "", postalCode: "" });
   const [loadingAddr, setLoadingAddr] = useState(false);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [locError, setLocError] = useState("");
+  const [locWarning, setLocWarning] = useState("");
 
   const mapRef = useRef(null);
   const debounceRef = useRef(null);
+  const autoTriedRef = useRef(false);
   // Tracks whether the last position change came from a direct map click.
   // Click ownership wins for ~600ms so the click handler's geocode isn't
   // immediately overwritten by the onIdle handler (which fires next as
@@ -69,7 +86,7 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
   }, [apiKey]);
 
   useEffect(() => {
-    reverseGeocode(initialPosition ?? DEFAULT_CENTER);
+    if (initialPosition) reverseGeocode(initialPosition);
   }, [initialPosition, reverseGeocode]);
 
   const onMapClick = (e) => {
@@ -77,6 +94,8 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
     const next = { lat: e.latLng.lat(), lng: e.latLng.lng() };
     clickLockRef.current = Date.now();
     setPos(next);
+    setLocError("");
+    setLocWarning("");
     mapRef.current?.panTo(next);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => reverseGeocode(next), 200);
@@ -88,6 +107,9 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
     // queued geocoding for the exact click point. The pan-to-center
     // settles via this idle event but should NOT overwrite the click.
     if (Date.now() - clickLockRef.current < 600) return;
+    // Don't auto-place a marker just because the user panned the map.
+    // A position only exists once the user clicks or geolocation resolves.
+    if (!pos) return;
     const c = mapRef.current.getCenter();
     if (!c) return;
     const next = { lat: c.lat(), lng: c.lng() };
@@ -96,8 +118,14 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
     debounceRef.current = setTimeout(() => reverseGeocode(next), 400);
   };
 
-  const useMyLocation = () => {
-    if (!navigator.geolocation) return;
+  const useMyLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setLocError("Geolocation is not supported in this browser.");
+      return;
+    }
+    setGeoLoading(true);
+    setLocError("");
+    setLocWarning("");
     navigator.geolocation.getCurrentPosition(
       (g) => {
         const c = { lat: g.coords.latitude, lng: g.coords.longitude };
@@ -105,14 +133,30 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
         setPos(c);
         mapRef.current?.panTo(c);
         mapRef.current?.setZoom(16);
+        if (typeof g.coords.accuracy === "number" && g.coords.accuracy > LOW_ACCURACY_THRESHOLD_M) {
+          setLocWarning(`Low-accuracy location (~${Math.round(g.coords.accuracy)} m off). Drag the pin to fine-tune.`);
+        }
         reverseGeocode(c);
+        setGeoLoading(false);
       },
-      () => {},
-      { enableHighAccuracy: true, timeout: 10000 }
+      (err) => {
+        setLocError(geoErrorMessage(err));
+        setGeoLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
-  };
+  }, [reverseGeocode]);
+
+  // Auto-attempt geolocation when the picker opens without a saved position.
+  useEffect(() => {
+    if (initialPosition) return;
+    if (autoTriedRef.current) return;
+    autoTriedRef.current = true;
+    useMyLocation();
+  }, [initialPosition, useMyLocation]);
 
   const confirm = () => {
+    if (!pos) return;
     onPick({
       full_address: address,
       city: parts.city,
@@ -163,7 +207,7 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
             <GoogleMap
               mapContainerStyle={containerStyle}
               center={center}
-              zoom={16}
+              zoom={pos ? 16 : 6}
               onLoad={(m) => {
                 mapRef.current = m;
               }}
@@ -177,22 +221,40 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
                 fullscreenControl: false,
               }}
             >
-              <Marker position={pos} />
+              {pos && <Marker position={pos} />}
             </GoogleMap>
           )}
 
           <button
             type="button"
             onClick={useMyLocation}
-            className="absolute top-3 right-3 flex items-center gap-1.5 bg-vxr-surface px-3 py-1.5 rounded-full shadow-vxr-md font-body text-xs font-semibold text-vxr-text hover:bg-vxr-surface2 border border-vxr-border"
+            disabled={geoLoading}
+            className="absolute top-3 right-3 flex items-center gap-1.5 bg-vxr-surface px-3 py-1.5 rounded-full shadow-vxr-md font-body text-xs font-semibold text-vxr-text hover:bg-vxr-surface2 border border-vxr-border disabled:opacity-60"
             title="Use my location"
           >
-            <Crosshair size={13} className="text-vxr-accent" />
-            My Location
+            {geoLoading ? (
+              <Loader2 size={13} className="animate-spin text-vxr-accent" />
+            ) : (
+              <Crosshair size={13} className="text-vxr-accent" />
+            )}
+            {geoLoading ? "Locating…" : "My Location"}
           </button>
         </div>
 
         <div className="px-6 py-4">
+          {locError && (
+            <div className="flex items-start gap-2 mb-3 p-2.5 rounded-vxr-md bg-red-50 border border-red-200 text-red-700 font-body text-xs">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{locError}</span>
+            </div>
+          )}
+          {!locError && locWarning && (
+            <div className="flex items-start gap-2 mb-3 p-2.5 rounded-vxr-md bg-amber-50 border border-amber-200 text-amber-800 font-body text-xs">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{locWarning}</span>
+            </div>
+          )}
+
           <div className="flex items-start gap-2 mb-3">
             <MapPin size={18} className="text-vxr-accent mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">
@@ -219,7 +281,7 @@ export default function MapAddressPicker({ initialPosition, onClose, onPick }) {
             <Button variant="secondary" size="sm" onClick={onClose}>
               Cancel
             </Button>
-            <Button size="sm" disabled={loadingAddr} onClick={confirm}>
+            <Button size="sm" disabled={loadingAddr || !pos} onClick={confirm}>
               Confirm Location
             </Button>
           </div>

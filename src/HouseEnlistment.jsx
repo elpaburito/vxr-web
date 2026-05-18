@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
-  ArrowLeft, Info, Home,
+  Info, Home,
   FileEdit, Camera as CameraIcon, Rocket,
   Users, ShieldCheck, LayoutDashboard, BadgeDollarSign,
   CheckCircle2, PlusCircle,
@@ -12,8 +12,7 @@ import {
   Eye, FileText, Trash2, ExternalLink,
   RotateCcw, Edit3, ChevronDown, ChevronUp,
 } from "lucide-react";
-import ProfileButton from "./components/ProfileButton.jsx";
-import NotificationBell from "./components/NotificationBell.jsx";
+import AppHeader from "./components/AppHeader.jsx";
 import PsgcLocationField from "./components/PsgcLocationField.jsx";
 import MapAddressPicker from "./components/MapAddressPicker.jsx";
 import ContractTemplatePreview from "./components/ContractTemplatePreview.jsx";
@@ -250,6 +249,7 @@ export default function HouseEnlistment() {
   const [removedImageIds, setRemovedImageIds] = useState([]);
   const [newImageFiles, setNewImageFiles]     = useState([]);
   const [newImagePreviews, setNewImagePreviews] = useState([]);
+  const [coverReplaced, setCoverReplaced]     = useState(false);
   const [loading, setLoading]   = useState(false);
   const [saving, setSaving]     = useState(false);
   const [error, setError]       = useState(null);
@@ -462,15 +462,23 @@ export default function HouseEnlistment() {
   };
 
   const useCurrentLocation = () => {
-    if (!navigator.geolocation) { setError(new Error("Geolocation not supported")); return; }
+    if (!navigator.geolocation) { setError(new Error("Geolocation is not supported in this browser.")); return; }
     setGeoLoading(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setFormData((prev) => ({ ...prev, latitude: pos.coords.latitude.toFixed(6), longitude: pos.coords.longitude.toFixed(6) }));
         setGeoLoading(false);
       },
-      (err) => { setError(new Error(err.message || "Could not get location")); setGeoLoading(false); },
-      { enableHighAccuracy: true, timeout: 10000 }
+      (err) => {
+        const msg =
+          err?.code === 1 ? "Location permission denied. Enable it in your browser settings." :
+          err?.code === 2 ? "Location unavailable. Check that location services are turned on." :
+          err?.code === 3 ? "Could not get a precise location in time. Try again or pick on the map." :
+          (err?.message || "Could not get location");
+        setError(new Error(msg));
+        setGeoLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
   };
 
@@ -505,7 +513,9 @@ export default function HouseEnlistment() {
       if (newImageFiles.length > 0) newUrls = await uploadListingImages(user.id, newImageFiles);
 
       const existingCover = existingImages.find((i) => i.is_cover)?.url;
-      const coverUrl = existingCover || existingCoverUrl || existingImages[0]?.url || newUrls[0] || null;
+      const coverUrl = (coverReplaced && newUrls[0])
+        ? newUrls[0]
+        : (existingCover || existingCoverUrl || existingImages[0]?.url || newUrls[0] || null);
 
       // Merge appliance amenities + utility labels + building features into
       // one array — listingsService.AMENITY_TO_FLAG fans them out into the
@@ -579,16 +589,15 @@ export default function HouseEnlistment() {
   if (view === "intro") {
     return (
       <div className="min-h-screen" style={{ background: BG }}>
+        <AppHeader showBack />
+
         {/* Hero */}
         <div className="relative overflow-hidden" style={{ background: `linear-gradient(135deg, ${BRAND} 0%, ${DARK} 100%)`, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 }}>
           <div className="absolute pointer-events-none rounded-full" style={{ width: 220, height: 220, right: -70, top: -70, background: "rgba(255,255,255,0.08)" }} />
           <div className="absolute pointer-events-none rounded-full" style={{ width: 160, height: 160, left: -50, bottom: -80, background: "rgba(255,255,255,0.06)" }} />
 
           <div className="relative z-10 max-w-3xl mx-auto px-5 pt-5 pb-8">
-            <div className="flex items-center justify-between mb-6">
-              <button onClick={() => navigate(-1)} className="p-2 rounded-xl" style={{ background: "rgba(255,255,255,0.20)" }} aria-label="Go back">
-                <ArrowLeft size={20} color="white" />
-              </button>
+            <div className="flex items-center justify-end mb-6">
               <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-white" style={{ background: "rgba(255,255,255,0.20)" }}>
                 <Info size={14} /> Free to List
               </span>
@@ -667,47 +676,22 @@ export default function HouseEnlistment() {
   ];
 
   return (
-    <div className="min-h-screen" style={{ background: BG }}>
-      {/* Header */}
-      <div
-        className="sticky top-0 z-50"
-        style={{ background: `linear-gradient(135deg, ${BRAND} 0%, ${DARK} 100%)` }}
-      >
-        <div className="max-w-5xl mx-auto px-5 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => isEditMode ? navigate("/my-listings") : setView("intro")}
-              className="p-2 rounded-xl"
-              style={{ background: "rgba(255,255,255,0.20)" }}
-              aria-label="Go back"
-            >
-              <ArrowLeft size={20} color="white" />
-            </button>
-            <div
-              onClick={() => navigate("/home2")}
-              className="flex items-center gap-2 cursor-pointer"
-            >
-              <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm">
-                <span className="font-black text-base" style={{ color: BRAND }}>V</span>
-              </div>
-              <span className="font-bold text-white text-base tracking-wide">ViewxRent</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <NotificationBell iconColor="white" dotBorderColor="white" />
-            <ProfileButton />
-          </div>
-        </div>
+    <div className="min-h-screen bg-vxr-bg">
+      <AppHeader
+        showBack
+        onBack={() => (isEditMode ? navigate("/my-listings") : setView("intro"))}
+      />
 
-        {/* Page title strip */}
-        <div className="max-w-5xl mx-auto px-5 pb-4">
-          <h1 className="text-xl font-bold text-white">
-            {isEditMode ? "Edit Listing" : "Create New Listing"}
-          </h1>
-          <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.80)" }}>
-            {isEditMode ? "Update your property details below" : "Fill in the details to publish your property"}
-          </p>
-        </div>
+      {/* Page title strip */}
+      <div className="max-w-5xl mx-auto px-5 pt-6 pb-4">
+        <h1 className="text-xl font-bold text-vxr-text">
+          {isEditMode ? "Edit Listing" : "Create New Listing"}
+        </h1>
+        <p className="text-xs text-vxr-text-sub mt-0.5">
+          {isEditMode
+            ? "Update your property details below"
+            : "Fill in the details to publish your property"}
+        </p>
       </div>
 
       {/* Form body */}
@@ -1294,6 +1278,7 @@ export default function HouseEnlistment() {
                   const file = e.target.files[0]; if (!file) return;
                   setNewImageFiles((prev) => [file, ...prev]);
                   setNewImagePreviews((prev) => [URL.createObjectURL(file), ...prev]);
+                  setCoverReplaced(true);
                   e.target.value = "";
                 }} className="hidden" />
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `${BRAND}1A` }}>

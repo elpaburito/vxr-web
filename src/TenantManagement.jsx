@@ -4,7 +4,8 @@ import {
   RefreshCw, Search, Users, AlertCircle,
   Home, Mail, Phone, MessageCircle, CreditCard,
   FileText, Calendar, Clock, Building2, Loader2,
-  LogOut, X, ShieldAlert, CheckCircle2, XCircle,
+  LogOut, X, ShieldAlert, CheckCircle2, XCircle, PlusCircle,
+  Send, Link as LinkIcon, Copy,
 } from "lucide-react";
 import { useAuth } from "./context/AuthContext.jsx";
 import AppHeader from "./components/AppHeader.jsx";
@@ -12,12 +13,13 @@ import {
   Card, Button, Badge, Avatar, Input, Modal, Stat, EmptyState, Section,
 } from "./components/vxr";
 import { fetchActiveTenants, fetchLandlordReports } from "./lib/tenantManagementService";
-import { getOrCreateConversation } from "./lib/messagingService";
+import { getOrCreateConversation, sendMessage } from "./lib/messagingService";
 import {
   requestTermination,
   acceptMutualTermination,
   withdrawMutualTermination,
 } from "./lib/postRentService";
+import { recordOfflinePayment, createLandlordPaymentLink } from "./lib/paymentsService";
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
@@ -65,7 +67,7 @@ function tenantTermination(tenant) {
   return Array.isArray(t) ? t[0] : t;
 }
 
-function TenantCard({ tenant, openReports, chatLoading, onReports, onPayments, onChat,
+function TenantCard({ tenant, openReports, chatLoading, onReports, onPayments, onRecordPayment, onSendLink, onChat,
   onTerminateMTM, onProposeMutual, onNonRenewal, onEvict, onAcceptMutual, onWithdrawMutual,
   onMoveOut, actionBusy,
 }) {
@@ -104,6 +106,8 @@ function TenantCard({ tenant, openReports, chatLoading, onReports, onPayments, o
   const actions = [
     { icon: FileText,      label: "Reports",  onClick: onReports },
     { icon: CreditCard,    label: "Payments", onClick: onPayments },
+    { icon: PlusCircle,    label: "Record",   onClick: onRecordPayment },
+    { icon: Send,          label: "Send link", onClick: onSendLink },
     { icon: MessageCircle, label: "Chat",     onClick: onChat, loading: chatLoading },
   ];
 
@@ -298,7 +302,7 @@ function TenantCard({ tenant, openReports, chatLoading, onReports, onPayments, o
 
 export default function TenantManagement() {
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
 
   const [loading,      setLoading]      = useState(true);
   const [tenants,      setTenants]      = useState([]);
@@ -307,10 +311,12 @@ export default function TenantManagement() {
   const [chatLoading,  setChatLoading]  = useState(null);
   const [actionBusy,   setActionBusy]   = useState(false);
   const [terminationModal, setTerminationModal] = useState(null);
+  const [recordPaymentModal, setRecordPaymentModal] = useState(null);
+  const [sendLinkModal, setSendLinkModal] = useState(null);
 
   useEffect(() => {
-    if (isAuthenticated === false) navigate("/login");
-  }, [isAuthenticated, navigate]);
+    if (!authLoading && isAuthenticated === false) navigate("/login");
+  }, [authLoading, isAuthenticated, navigate]);
 
   const load = useCallback(async () => {
     if (!user?.id) return;
@@ -328,25 +334,32 @@ export default function TenantManagement() {
 
   useEffect(() => { load(); }, [load]);
 
-  const filtered = query.trim()
-    ? tenants.filter((t) => {
-        const q   = query.toLowerCase();
-        const app = t.application    ?? {};
-        const p   = t.tenant_profile ?? {};
-        const l   = t.listings       ?? {};
-        const name = `${app.first_name ?? ""} ${app.last_name ?? ""} ${p.full_name ?? ""}`.toLowerCase();
-        return (
-          name.includes(q) ||
-          (l.title  ?? "").toLowerCase().includes(q) ||
-          (app.email ?? "").toLowerCase().includes(q)
-        );
-      })
-    : tenants;
+  const activeTenants = tenants.filter((t) => t.status !== "closed");
+  const closedTenants = tenants.filter((t) => t.status === "closed");
+
+  const applySearch = (list) =>
+    query.trim()
+      ? list.filter((t) => {
+          const q   = query.toLowerCase();
+          const app = t.application    ?? {};
+          const p   = t.tenant_profile ?? {};
+          const l   = t.listings       ?? {};
+          const name = `${app.first_name ?? ""} ${app.last_name ?? ""} ${p.full_name ?? ""}`.toLowerCase();
+          return (
+            name.includes(q) ||
+            (l.title  ?? "").toLowerCase().includes(q) ||
+            (app.email ?? "").toLowerCase().includes(q)
+          );
+        })
+      : list;
+
+  const filteredActive = applySearch(activeTenants);
+  const filteredClosed = applySearch(closedTenants);
 
   const openCountFor = (contractId) =>
     openReports.filter((r) => r.contract_id === contractId).length;
 
-  const uniqueProps = new Set(tenants.map((t) => t.listing_id).filter(Boolean)).size;
+  const uniqueProps = new Set(activeTenants.map((t) => t.listing_id).filter(Boolean)).size;
 
   async function handleChat(tenant) {
     if (!user?.id || !tenant.tenant_id) return;
@@ -365,6 +378,26 @@ export default function TenantManagement() {
   const onNonRenewal     = (tenant) => setTerminationModal({ tenant, kind: "non_renewal" });
   const onEvict          = (tenant) => setTerminationModal({ tenant, kind: "eviction" });
   const onMoveOut        = (tenant) => navigate(`/contract/${tenant.id}/move-out`);
+  const onRecordPayment  = (tenant) => setRecordPaymentModal({ tenant });
+  const onSendLink       = (tenant) => setSendLinkModal({ tenant });
+
+  const submitRecordPayment = async ({ amountPhp, methodType, billingMonth, paidAt, note }) => {
+    const tenant = recordPaymentModal?.tenant;
+    if (!tenant) return;
+    setActionBusy(true);
+    const res = await recordOfflinePayment({
+      contractId: tenant.id,
+      amountPhp,
+      methodType,
+      billingMonth,
+      paidAt,
+      note,
+    });
+    setActionBusy(false);
+    if (res?.error) { alert(res.error); return; }
+    setRecordPaymentModal(null);
+    await load();
+  };
 
   const onAcceptMutual = async (tenant) => {
     setActionBusy(true);
@@ -426,9 +459,9 @@ export default function TenantManagement() {
                 Tenants &amp; Stays
               </h1>
               <p className="mt-2 font-body text-[15px] text-white/85">
-                {tenants.length === 0
+                {activeTenants.length === 0
                   ? "You have no active tenants yet"
-                  : `Manage ${tenants.length} active tenant${tenants.length === 1 ? "" : "s"}`}
+                  : `Manage ${activeTenants.length} active tenant${activeTenants.length === 1 ? "" : "s"}`}
               </p>
             </div>
             <button
@@ -445,7 +478,7 @@ export default function TenantManagement() {
       <div className="-mt-8 flex-1 max-w-7xl mx-auto w-full px-6 pb-12 relative z-10">
         {/* Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
-          <Stat label="Active tenants" value={tenants.length}     icon={Users} />
+          <Stat label="Active tenants" value={activeTenants.length} icon={Users} />
           <Stat label="Open reports"   value={openReports.length} icon={AlertCircle} />
           <Stat label="Properties"     value={uniqueProps}        icon={Building2} />
         </div>
@@ -465,13 +498,13 @@ export default function TenantManagement() {
           title="Active Tenants"
           action={
             <span className="font-mono text-xs font-semibold text-vxr-text-sub">
-              {filtered.length}
+              {filteredActive.length}
             </span>
           }
         />
 
         {/* Tenant grid / empty state */}
-        {filtered.length === 0 ? (
+        {filteredActive.length === 0 ? (
           <Card>
             <EmptyState
               icon={Users}
@@ -485,7 +518,7 @@ export default function TenantManagement() {
           </Card>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {filtered.map((tenant) => (
+            {filteredActive.map((tenant) => (
               <TenantCard
                 key={tenant.id}
                 tenant={tenant}
@@ -493,6 +526,8 @@ export default function TenantManagement() {
                 chatLoading={chatLoading === tenant.id}
                 onReports={() => navigate("/reports")}
                 onPayments={() => navigate(`/contract/${tenant.id}`)}
+                onRecordPayment={() => onRecordPayment(tenant)}
+                onSendLink={() => onSendLink(tenant)}
                 onChat={() => handleChat(tenant)}
                 onTerminateMTM={onTerminateMTM}
                 onProposeMutual={onProposeMutual}
@@ -505,6 +540,45 @@ export default function TenantManagement() {
               />
             ))}
           </div>
+        )}
+
+        {/* Past Tenants — closed contracts */}
+        {filteredClosed.length > 0 && (
+          <>
+            <div className="mt-8">
+              <Section
+                title="Past Tenants"
+                action={
+                  <span className="font-mono text-xs font-semibold text-vxr-text-sub">
+                    {filteredClosed.length}
+                  </span>
+                }
+              />
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {filteredClosed.map((tenant) => (
+                <TenantCard
+                  key={tenant.id}
+                  tenant={tenant}
+                  openReports={openCountFor(tenant.id)}
+                  chatLoading={chatLoading === tenant.id}
+                  onReports={() => navigate("/reports")}
+                  onPayments={() => navigate(`/contract/${tenant.id}`)}
+                  onRecordPayment={() => onRecordPayment(tenant)}
+                  onSendLink={() => onSendLink(tenant)}
+                  onChat={() => handleChat(tenant)}
+                  onTerminateMTM={onTerminateMTM}
+                  onProposeMutual={onProposeMutual}
+                  onNonRenewal={onNonRenewal}
+                  onEvict={onEvict}
+                  onAcceptMutual={onAcceptMutual}
+                  onWithdrawMutual={onWithdrawMutual}
+                  onMoveOut={onMoveOut}
+                  actionBusy={actionBusy}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
 
@@ -525,6 +599,23 @@ export default function TenantManagement() {
           busy={actionBusy}
           onClose={() => setTerminationModal(null)}
           onSubmit={submitTermination}
+        />
+      )}
+
+      {recordPaymentModal && (
+        <RecordPaymentModal
+          tenant={recordPaymentModal.tenant}
+          busy={actionBusy}
+          onClose={() => setRecordPaymentModal(null)}
+          onSubmit={submitRecordPayment}
+        />
+      )}
+
+      {sendLinkModal && (
+        <SendPaymentLinkModal
+          tenant={sendLinkModal.tenant}
+          landlordId={user?.id}
+          onClose={() => setSendLinkModal(null)}
         />
       )}
     </div>
@@ -623,6 +714,292 @@ function LandlordTerminationModal({ tenant, kind, busy, onClose, onSubmit }) {
               : "I confirm the 30-day notice and that the tenancy will end on the effective date."}
           </span>
         </label>
+      </div>
+    </Modal>
+  );
+}
+
+// Landlord logs a rent payment they received outside the app (cash,
+// direct GCash, manual bank transfer). The Edge Function gates writes
+// on auth.uid() === contract.landlord_id, so this UI doesn't need to
+// re-check role — but it does default sensible values from the
+// tenant's contract to keep entry quick.
+const OFFLINE_METHODS = [
+  { value: "cash",          label: "Cash"            },
+  { value: "bank_transfer", label: "Bank transfer"   },
+  { value: "gcash",         label: "GCash (direct)"  },
+  { value: "paymaya",       label: "Maya (direct)"   },
+  { value: "grab_pay",      label: "GrabPay"         },
+  { value: "offline_other", label: "Other / off-platform" },
+];
+
+function firstOfMonthIso(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
+function RecordPaymentModal({ tenant, busy, onClose, onSubmit }) {
+  const defaultAmount = Number(tenant?.monthly_rent || 0);
+  const tenantName = resolveName(tenant?.tenant_profile, tenant?.application);
+
+  const [amount, setAmount]               = useState(defaultAmount > 0 ? String(defaultAmount) : "");
+  const [method, setMethod]               = useState("cash");
+  const [billingMonth, setBillingMonth]   = useState(firstOfMonthIso());
+  const [paidAt, setPaidAt]               = useState(new Date().toISOString().slice(0, 10));
+  const [note, setNote]                   = useState("");
+  const [confirmAck, setConfirmAck]       = useState(false);
+
+  const amountNum = Number(amount);
+  const amountValid = Number.isFinite(amountNum) && amountNum > 0;
+  const submitDisabled = !confirmAck || busy || !amountValid;
+
+  const handleSubmit = async () => {
+    if (submitDisabled) return;
+    await onSubmit({
+      amountPhp:    amountNum,
+      methodType:   method,
+      billingMonth,                                // 'YYYY-MM-01'
+      paidAt:       new Date(`${paidAt}T12:00:00`).toISOString(),
+      note:         note.trim() || null,
+    });
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Record off-platform payment"
+      subtitle={<>Tenant: <strong>{tenantName || "Tenant"}</strong></>}
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={handleSubmit} disabled={submitDisabled}>
+            {busy && <Loader2 size={14} className="animate-spin" />}
+            Save payment
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <Input
+          type="number"
+          inputMode="decimal"
+          min="0"
+          step="0.01"
+          label="Amount (PHP)"
+          placeholder={defaultAmount > 0 ? String(defaultAmount) : "0.00"}
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+        />
+
+        <div className="flex flex-col gap-1.5">
+          <label className="font-body text-[11px] font-semibold uppercase tracking-wider text-vxr-text-sub">
+            Method
+          </label>
+          <select
+            value={method}
+            onChange={(e) => setMethod(e.target.value)}
+            className="bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md px-3.5 py-3 font-body text-sm text-vxr-text focus:outline-none focus:border-vxr-accent transition-colors"
+          >
+            {OFFLINE_METHODS.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Input
+            type="month"
+            label="Rent month covered"
+            value={billingMonth.slice(0, 7)}
+            onChange={(e) => setBillingMonth(`${e.target.value}-01`)}
+          />
+          <Input
+            type="date"
+            label="Date received"
+            value={paidAt}
+            max={new Date().toISOString().slice(0, 10)}
+            onChange={(e) => setPaidAt(e.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label className="font-body text-[11px] font-semibold uppercase tracking-wider text-vxr-text-sub">
+            Note (optional)
+          </label>
+          <div className="bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md px-3.5 py-3 focus-within:border-vxr-accent transition-colors duration-150">
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={2}
+              placeholder="e.g. cash, receipt #042"
+              className="w-full bg-transparent border-none outline-none font-body text-sm text-vxr-text placeholder:text-vxr-text-muted resize-y"
+            />
+          </div>
+        </div>
+
+        <label className="flex items-start gap-2 text-[12px] font-body text-vxr-text-sub cursor-pointer">
+          <input
+            type="checkbox"
+            checked={confirmAck}
+            onChange={(e) => setConfirmAck(e.target.checked)}
+            className="mt-0.5 accent-vxr-accent"
+          />
+          <span>
+            I confirm I received this payment from {tenantName || "the tenant"} and want to log it on their record.
+          </span>
+        </label>
+      </div>
+    </Modal>
+  );
+}
+
+// Landlord generates a PayMongo Link for a specific rent month and
+// shares the URL (clipboard, or auto-send via in-app chat). The actual
+// payment happens on PayMongo's hosted checkout; webhook records it.
+function SendPaymentLinkModal({ tenant, landlordId, onClose }) {
+  const tenantName = resolveName(tenant?.tenant_profile, tenant?.application);
+  const monthlyRent = Number(tenant?.monthly_rent || 0);
+
+  const [billingMonth, setBillingMonth] = useState(firstOfMonthIso());
+  const [note, setNote]                 = useState("");
+  const [busy, setBusy]                 = useState(false);
+  const [error, setError]               = useState(null);
+  const [link, setLink]                 = useState(null); // { checkout_url, link_id, expires_at, reused }
+  const [copied, setCopied]             = useState(false);
+  const [chatSent, setChatSent]         = useState(false);
+
+  const handleGenerate = async () => {
+    setBusy(true);
+    setError(null);
+    const res = await createLandlordPaymentLink({
+      contractId:   tenant.id,
+      billingMonth,
+      note:         note.trim() || null,
+    });
+    setBusy(false);
+    if (res?.error) { setError(res.error); return; }
+    setLink(res);
+  };
+
+  const handleCopy = async () => {
+    if (!link?.checkout_url) return;
+    try {
+      await navigator.clipboard.writeText(link.checkout_url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Could not copy. Long-press the URL to copy manually.");
+    }
+  };
+
+  const handleSendViaChat = async () => {
+    if (!link?.checkout_url || !tenant?.tenant_id || !landlordId) return;
+    setBusy(true);
+    setError(null);
+    const { data: conv, error: cErr } = await getOrCreateConversation(
+      tenant.tenant_id,
+      landlordId,
+      tenant.listing_id ?? null,
+    );
+    if (cErr || !conv?.id) {
+      setBusy(false);
+      setError("Could not open a chat with this tenant.");
+      return;
+    }
+    const monthLbl = new Date(`${billingMonth.slice(0, 10)}T00:00:00`)
+      .toLocaleString("en-US", { month: "long", year: "numeric" });
+    const msg = `Payment link for rent (${monthLbl}): ${link.checkout_url}`;
+    const { error: mErr } = await sendMessage(conv.id, landlordId, msg);
+    setBusy(false);
+    if (mErr) { setError("Sent the link wasn't possible; copy + send manually."); return; }
+    setChatSent(true);
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Send payment link"
+      subtitle={<>Tenant: <strong>{tenantName || "Tenant"}</strong></>}
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            {link ? "Done" : "Cancel"}
+          </Button>
+          {!link && (
+            <Button onClick={handleGenerate} disabled={busy} icon={LinkIcon}>
+              {busy && <Loader2 size={14} className="animate-spin" />}
+              Generate link
+            </Button>
+          )}
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        {!link && (
+          <>
+            <Input
+              type="month"
+              label="Rent month to charge"
+              value={billingMonth.slice(0, 7)}
+              onChange={(e) => setBillingMonth(`${e.target.value}-01`)}
+            />
+            {monthlyRent > 0 && (
+              <p className="font-body text-xs text-vxr-text-sub">
+                Amount: <strong>₱{monthlyRent.toLocaleString("en-PH")}</strong> (from contract)
+              </p>
+            )}
+            <div className="flex flex-col gap-1.5">
+              <label className="font-body text-[11px] font-semibold uppercase tracking-wider text-vxr-text-sub">
+                Note (optional, shown on PayMongo checkout)
+              </label>
+              <div className="bg-vxr-surface2 border-[1.5px] border-vxr-border rounded-vxr-md px-3.5 py-3 focus-within:border-vxr-accent transition-colors duration-150">
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. Please pay by the 5th"
+                  className="w-full bg-transparent border-none outline-none font-body text-sm text-vxr-text placeholder:text-vxr-text-muted resize-y"
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {link && (
+          <>
+            <div className="rounded-vxr-md border border-vxr-success/30 bg-vxr-success-soft p-3 text-vxr-success text-sm font-body">
+              {link.reused
+                ? "An open link for this month already exists — reusing it."
+                : "Link generated. Share it with your tenant."}
+            </div>
+            <Input
+              label="Checkout URL"
+              value={link.checkout_url}
+              readOnly
+              onFocus={(e) => e.target.select()}
+            />
+            <div className="flex gap-2">
+              <Button variant="secondary" icon={Copy} onClick={handleCopy} disabled={busy}>
+                {copied ? "Copied!" : "Copy URL"}
+              </Button>
+              <Button icon={Send} onClick={handleSendViaChat} disabled={busy || chatSent}>
+                {busy && <Loader2 size={14} className="animate-spin" />}
+                {chatSent ? "Sent via chat" : "Send via chat"}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {error && (
+          <div className="rounded-vxr-md border border-vxr-danger/30 bg-vxr-danger-soft text-vxr-danger text-sm px-3 py-2 font-body">
+            {error}
+          </div>
+        )}
       </div>
     </Modal>
   );

@@ -25,6 +25,8 @@ supabase functions deploy paymongo-record-payment
 supabase functions deploy paymongo-add-method
 supabase functions deploy paymongo-delete-method
 supabase functions deploy paymongo-set-default-method
+supabase functions deploy paymongo-create-payment-link
+supabase functions deploy landlord-record-offline-payment
 supabase functions deploy paymongo-webhook --no-verify-jwt
 ```
 
@@ -37,7 +39,11 @@ protects the endpoint instead.
 PayMongo dashboard → **Webhooks → Add endpoint**:
 
 - URL: `https://<your-project>.supabase.co/functions/v1/paymongo-webhook`
-- Events: `payment.paid`, `payment.failed`, `payment.refunded`
+- Events: `payment.paid`, `payment.failed`, `payment.refunded`, `link.payment.paid`
+
+`link.payment.paid` is required for landlord-initiated payment links to
+be recorded; without it the `payment_links` row stays `pending` forever
+even after the tenant pays.
 
 Copy the signing secret PayMongo returns and store it:
 

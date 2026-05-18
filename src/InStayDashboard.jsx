@@ -4,12 +4,14 @@ import {
   RefreshCw, MapPin, CreditCard, Calendar,
   Home, ShieldCheck, Clock, Wrench, MessageCircle, FileText,
   AlertCircle, Loader2, ChevronRight, CheckCircle2,
-  AlertTriangle, Circle, LogOut, X,
+  AlertTriangle, Circle, LogOut, X, Receipt,
 } from "lucide-react";
 import { useAuth } from "./context/AuthContext.jsx";
 import AppHeader from "./components/AppHeader.jsx";
 import { fetchMyActiveContract, normalizeContract } from "./lib/contractsService";
+import { cleanFullAddress } from "./lib/locationUtils";
 import { fetchMyReports } from "./lib/reportsService";
+import { fetchContractRentStatus, fetchRentMonths, fetchContractLastPaidAt } from "./lib/paymentsService";
 import { getOrCreateConversation } from "./lib/messagingService";
 import {
   getTermination,
@@ -31,11 +33,25 @@ const fmtMoney = (n) => {
   return `₱${Number(n).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
-function nextDueDate(contract) {
-  const lastPaid = contract.payment?.paidAt ?? contract.startDate;
-  if (!lastPaid) return null;
-  const base = new Date(lastPaid);
-  return new Date(base.getFullYear(), base.getMonth() + 1, base.getDate());
+// 'YYYY-MM-01' → 'May 2026'.
+function fmtMonthLabel(iso) {
+  if (!iso) return null;
+  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`);
+  if (isNaN(d.getTime())) return null;
+  return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+// 'YYYY-MM-01' → 'YYYY-MM' for the route param.
+function monthParam(iso) {
+  return iso ? String(iso).slice(0, 7) : null;
+}
+
+// Mirrors mobile (in_stay_dashboard_screen.dart): next due = last paid + 1 month.
+function nextDueFromLastPaid(lastPaidAt) {
+  if (!lastPaidAt) return null;
+  const d = new Date(lastPaidAt);
+  if (isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());
 }
 
 function daysUntilDue(dueDate) {
@@ -44,7 +60,7 @@ function daysUntilDue(dueDate) {
 }
 
 function dueChip(days) {
-  if (days === null) return { label: "No prior payment", tone: "neutral" };
+  if (days === null) return { label: "No payments yet", tone: "neutral" };
   if (days < 0) return { label: `${-days}d overdue`, tone: "danger" };
   if (days === 0) return { label: "Due today", tone: "warning" };
   if (days <= 5) return { label: `Due in ${days}d`, tone: "warning" };
@@ -65,42 +81,60 @@ const REPORT_PRIORITIES = [
 
 export default function InStayDashboard() {
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [contract, setContract] = useState(null);
   const [rawContract, setRawContract] = useState(null);
   const [termination, setTermination] = useState(null);
   const [reports, setReports] = useState([]);
+  const [rentStatus, setRentStatus] = useState(null);
+  const [rentMonths, setRentMonths] = useState([]);
+  const [lastPaid, setLastPaid] = useState(null);
   const [error, setError] = useState(null);
   const [terminateModal, setTerminateModal] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated === false) navigate("/login");
-  }, [isAuthenticated, navigate]);
+    if (!authLoading && isAuthenticated === false) navigate("/login");
+  }, [authLoading, isAuthenticated, navigate]);
 
   const load = useCallback(async () => {
     if (!user?.id) return;
     setLoading(true);
     setError(null);
     try {
-      const [{ data: contractRow, error: cErr }, { data: rpts, error: rErr }] =
-        await Promise.all([
-          fetchMyActiveContract(user.id),
-          fetchMyReports(user.id),
-        ]);
+      const { data: contractRow, error: cErr } = await fetchMyActiveContract(user.id);
       if (cErr) throw cErr;
-      if (rErr) throw rErr;
       setRawContract(contractRow ?? null);
       setContract(contractRow ? normalizeContract(contractRow) : null);
-      setReports(rpts ?? []);
 
       if (contractRow?.id) {
-        const { data: term } = await getTermination(contractRow.id);
+        const [
+          { data: rpts, error: rErr },
+          { data: term },
+          { data: rStatus },
+          { data: rMonths },
+          { data: lp },
+        ] = await Promise.all([
+          fetchMyReports(user.id, contractRow.id),
+          getTermination(contractRow.id),
+          fetchContractRentStatus(contractRow.id),
+          fetchRentMonths(contractRow.id),
+          fetchContractLastPaidAt(contractRow.id),
+        ]);
+        if (rErr) throw rErr;
+        setReports(rpts ?? []);
         setTermination(term ?? null);
+        setRentStatus(rStatus ?? null);
+        setRentMonths(rMonths ?? []);
+        setLastPaid(lp ?? null);
       } else {
+        setReports([]);
         setTermination(null);
+        setRentStatus(null);
+        setRentMonths([]);
+        setLastPaid(null);
       }
     } catch (e) {
       setError(e?.message || "Failed to load dashboard.");
@@ -115,11 +149,12 @@ export default function InStayDashboard() {
 
   const listing = contract?.listings ?? {};
   const listingLocation =
-    listing.full_address ||
+    cleanFullAddress(listing.full_address, listing) ||
     [listing.city, listing.province].filter(Boolean).join(", ") ||
     contract?.propertyAddress ||
     "Address unavailable";
-  const due = contract ? nextDueDate(contract) : null;
+  const nextDueMonth = rentStatus?.next_due_month ?? null;
+  const due  = nextDueFromLastPaid(lastPaid?.paid_at ?? null);
   const days = daysUntilDue(due);
   const chip = dueChip(days);
   const movedIn = contract?.startDate ? new Date(contract.startDate) : null;
@@ -274,7 +309,7 @@ export default function InStayDashboard() {
                 ViewxRent · Tenant
               </div>
               <h1 className="font-display text-3xl md:text-4xl font-extrabold text-white tracking-tight leading-tight">
-                {listing.title ?? contract.propertyAddress ?? "My Rental"}
+                {listing.title ?? "My Rental"}
               </h1>
               <div className="flex items-center gap-1.5 mt-2 text-white/90">
                 <MapPin size={14} />
@@ -330,7 +365,7 @@ export default function InStayDashboard() {
           />
         )}
 
-        {(!contract.monthlyRent || !contract.startDate) && (
+        {(!contract.monthlyRent || !contract.securityDeposit || !contract.startDate) && (
           <InfoBanner
             tone="info"
             title="Some lease details are missing"
@@ -368,16 +403,31 @@ export default function InStayDashboard() {
 
           <div className="flex items-center gap-1.5 font-body text-xs text-vxr-text-muted mb-5">
             <Calendar size={13} />
-            <span>Due {due ? fmtDate(due.toISOString()) : "—"}</span>
+            <span>
+              {nextDueMonth
+                ? `Rent for ${fmtMonthLabel(nextDueMonth)}`
+                : "All months up to date"}
+            </span>
           </div>
 
-          <Button
-            fullWidth
-            icon={CreditCard}
-            onClick={() => navigate("/my-payments")}
-          >
-            Pay Next Month
-          </Button>
+          {nextDueMonth ? (
+            <Button
+              fullWidth
+              icon={CreditCard}
+              onClick={() => navigate(`/contract/${contract.id}/pay?month=${monthParam(nextDueMonth)}`)}
+            >
+              Pay {fmtMonthLabel(nextDueMonth)}
+            </Button>
+          ) : (
+            <Button
+              fullWidth
+              variant="secondary"
+              icon={Receipt}
+              onClick={() => navigate("/my-payments")}
+            >
+              View payment history
+            </Button>
+          )}
         </Card>
 
         {/* Quick Stats */}
@@ -400,7 +450,11 @@ export default function InStayDashboard() {
           <ActionTile
             icon={CreditCard}
             label="Pay Rent"
-            onClick={() => navigate("/my-payments")}
+            onClick={() => navigate(
+              nextDueMonth
+                ? `/contract/${contract.id}/pay?month=${monthParam(nextDueMonth)}`
+                : "/my-payments"
+            )}
           />
           <ActionTile icon={Wrench} label="Report" onClick={() => navigate("/reports")} />
           <ActionTile icon={MessageCircle} label="Chat" onClick={handleChatLandlord} />
@@ -410,6 +464,19 @@ export default function InStayDashboard() {
             onClick={() => navigate(`/contract/${contract.id}`)}
           />
         </div>
+
+        {/* Rent History (per-month paid/unpaid breakdown) */}
+        {rentMonths.length > 0 && (
+          <SectionCard title="Rent History">
+            <RentMonthList
+              months={rentMonths}
+              monthlyRent={contract.monthlyRent}
+              onPay={(billingMonth) =>
+                navigate(`/contract/${contract.id}/pay?month=${monthParam(billingMonth)}`)
+              }
+            />
+          </SectionCard>
+        )}
 
         {/* Lease Details */}
         <SectionCard title="Lease Details">
@@ -809,5 +876,46 @@ function TerminationModal({ isMTM, busy, onClose, onSubmit }) {
         </div>
       </form>
     </div>
+  );
+}
+
+// One row per month from move-in → current. Paid months show the
+// receipt date; unpaid months show a "Pay" button that deep-links
+// to ContractPayment with the right month.
+function RentMonthList({ months, monthlyRent, onPay }) {
+  // Most-recent first so the unpaid current month is at the top.
+  const ordered = [...months].sort((a, b) =>
+    a.billing_month < b.billing_month ? 1 : -1
+  );
+  return (
+    <ul className="divide-y divide-vxr-border">
+      {ordered.map((m) => {
+        const paid = m.status === "paid";
+        const amount = (Number(m.amount_cents) || Math.round(Number(monthlyRent) * 100) || 0) / 100;
+        return (
+          <li key={m.billing_month} className="flex items-center justify-between py-3">
+            <div className="min-w-0">
+              <p className="font-display text-sm font-bold text-vxr-text">
+                {fmtMonthLabel(m.billing_month)}
+              </p>
+              <p className="font-body text-[11px] text-vxr-text-sub">
+                {paid
+                  ? `Paid ${m.paid_at ? fmtDate(m.paid_at) : ""}${m.method ? ` · ${m.method}` : ""}`
+                  : `Rent ${fmtMoney(amount)}`}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {paid ? (
+                <Badge tone="success">Paid</Badge>
+              ) : (
+                <Button size="sm" icon={CreditCard} onClick={() => onPay(m.billing_month)}>
+                  Pay
+                </Button>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

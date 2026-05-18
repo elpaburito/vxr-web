@@ -9,7 +9,7 @@ import AppHeader from "./components/AppHeader.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import {
   fetchContractById, updateContract, signContract, resetContractSignatures,
-  recordContractPayment, getContractStatus, CONTRACT_TYPES,
+  getContractStatus, CONTRACT_TYPES,
   normalizeContract, denormalizeContractPatch, uploadedContractInfo,
 } from "./lib/contractsService";
 import {
@@ -142,7 +142,7 @@ export default function ContractView() {
         [role === "landlord" ? "landlordSignature" : "tenantSignature"]: {
           name,
           signedAt,
-          image: signatureDataUrl ?? null,
+          data: signatureDataUrl ? { kind: "image", url: signatureDataUrl } : null,
         },
       }));
     }
@@ -617,18 +617,23 @@ function DisplayField({ label, value }) {
 
 function SignatureBlock({ role, label, signature, canSign, onSignClick }) {
   if (signature) {
+    const sigData = signature.data;
     return (
       <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/60">
         <div className="text-[10.5px] uppercase tracking-wider font-semibold text-slate-400 mb-2">
           {label}
         </div>
-        {signature.image ? (
+        {sigData?.kind === "image" ? (
           <div className="bg-white rounded-md border border-slate-200 p-2 mb-3 flex items-center justify-center min-h-[88px]">
             <img
-              src={signature.image}
+              src={sigData.url}
               alt={`${role} signature`}
               className="max-h-[80px] w-auto"
             />
+          </div>
+        ) : sigData?.kind === "strokes" ? (
+          <div className="bg-white rounded-md border border-slate-200 p-2 mb-3 flex items-center justify-center min-h-[88px]">
+            <StrokeSignatureSvg strokes={sigData.strokes} ariaLabel={`${role} signature`} />
           </div>
         ) : (
           <div
@@ -671,6 +676,73 @@ function SignatureBlock({ role, label, signature, canSign, onSignClick }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Render legacy mobile stroke-coordinate signatures as inline SVG.
+ * Mirrors the mobile painter's quadratic-bezier-to-midpoint smoothing
+ * so the on-web rendering matches what the user actually drew. The
+ * viewBox auto-fits to the bounding box of the ink — no need to know
+ * the original canvas size.
+ */
+function StrokeSignatureSvg({ strokes, ariaLabel }) {
+  if (!Array.isArray(strokes) || strokes.length === 0) return null;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const stroke of strokes) {
+    for (const p of stroke) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+
+  const pad = 4;
+  const vbX = minX - pad;
+  const vbY = minY - pad;
+  const vbW = Math.max(1, (maxX - minX) + pad * 2);
+  const vbH = Math.max(1, (maxY - minY) + pad * 2);
+
+  const paths = [];
+  const dots = [];
+  strokes.forEach((stroke, i) => {
+    if (stroke.length === 1) {
+      const p = stroke[0];
+      dots.push(<circle key={`d-${i}`} cx={p.x} cy={p.y} r={1.5} fill="black" />);
+      return;
+    }
+    let d = `M ${stroke[0].x} ${stroke[0].y}`;
+    for (let j = 1; j < stroke.length - 1; j++) {
+      const cur = stroke[j];
+      const next = stroke[j + 1];
+      const midX = (cur.x + next.x) / 2;
+      const midY = (cur.y + next.y) / 2;
+      d += ` Q ${cur.x} ${cur.y} ${midX} ${midY}`;
+    }
+    const last = stroke[stroke.length - 1];
+    d += ` L ${last.x} ${last.y}`;
+    paths.push(<path key={`p-${i}`} d={d} />);
+  });
+
+  return (
+    <svg
+      role="img"
+      aria-label={ariaLabel}
+      viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
+      preserveAspectRatio="xMidYMid meet"
+      className="max-h-[80px] w-auto"
+      stroke="black"
+      strokeWidth={3}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      fill="none"
+    >
+      {paths}
+      {dots}
+    </svg>
   );
 }
 

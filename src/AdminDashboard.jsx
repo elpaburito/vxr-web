@@ -3,15 +3,16 @@ import { useNavigate } from "react-router-dom";
 import {
   Users, Building2, ClipboardList, FileSignature,
   CheckCircle2, AlertTriangle, RefreshCw, Search,
-  ShieldCheck, ShieldOff, Trash2, ExternalLink, FileText,
+  ShieldCheck, ShieldOff, Trash2, ExternalLink, FileText, Check, X, Ban, RotateCcw,
 } from "lucide-react";
 import AdminGuard from "./components/AdminGuard.jsx";
 import AdminLayout from "./components/AdminLayout.jsx";
 import AdminVerifications from "./components/AdminVerifications.jsx";
 import {
   fetchAdminStats, fetchUsers, fetchAllListings, fetchAllApplications,
-  updateUserRole, setUserVerified,
+  updateUserRole, setUserVerified, setUserSuspended,
   setListingStatus, setListingVerified, deleteListing,
+  approveApplication, rejectApplication,
 } from "./lib/adminService.js";
 
 const ROLE_OPTIONS = ["tenant", "landlord", "admin"];
@@ -85,13 +86,14 @@ function UsersTab() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [role, setRole] = useState("");
+  const [suspended, setSuspended] = useState("");
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState("");
 
   const load = async () => {
     setLoading(true); setError("");
     try {
-      setUsers(await fetchUsers({ search, role }));
+      setUsers(await fetchUsers({ search, role, suspended }));
     } catch (e) {
       setError(e?.message || "Failed to load users");
     } finally { setLoading(false); }
@@ -117,6 +119,36 @@ function UsersTab() {
     finally { setBusyId(null); }
   };
 
+  const toggleSuspended = async (u) => {
+    let reason = null;
+    if (!u.is_suspended) {
+      reason = window.prompt(
+        `Suspend ${u.full_name || u.email}?\n\nReason (required, recorded on the profile and in the audit log):`,
+        ""
+      );
+      if (reason === null) return;
+      if (!reason.trim()) {
+        window.alert("A reason is required to suspend a user.");
+        return;
+      }
+    } else {
+      if (!window.confirm(`Lift suspension on ${u.full_name || u.email}?`)) return;
+    }
+    setBusyId(u.id); setError("");
+    try {
+      await setUserSuspended(u.id, !u.is_suspended, reason);
+      const now = new Date().toISOString();
+      setUsers((prev) => prev.map((x) => x.id === u.id ? {
+        ...x,
+        is_suspended: !u.is_suspended,
+        suspended_at: !u.is_suspended ? now : null,
+        suspension_reason: !u.is_suspended ? (reason || null) : null,
+      } : x));
+    } catch (e) {
+      setError(e?.message || "Failed to update suspension");
+    } finally { setBusyId(null); }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
@@ -138,6 +170,16 @@ function UsersTab() {
           >
             <option value="">All roles</option>
             {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <select
+            value={suspended}
+            onChange={(e) => setSuspended(e.target.value)}
+            className="h-10 px-3 text-sm bg-white border border-slate-200 rounded-lg outline-none"
+            title="Filter by suspension state"
+          >
+            <option value="">All users</option>
+            <option value="no">Active only</option>
+            <option value="yes">Suspended only</option>
           </select>
           <button
             onClick={load}
@@ -161,7 +203,7 @@ function UsersTab() {
               <tr>
                 <th className="text-left font-semibold px-4 py-3">User</th>
                 <th className="text-left font-semibold px-4 py-3">Role</th>
-                <th className="text-left font-semibold px-4 py-3">Verified</th>
+                <th className="text-left font-semibold px-4 py-3">Status</th>
                 <th className="text-left font-semibold px-4 py-3">Joined</th>
                 <th className="text-right font-semibold px-4 py-3">Actions</th>
               </tr>
@@ -174,7 +216,7 @@ function UsersTab() {
                 <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No users found.</td></tr>
               )}
               {users.map((u) => (
-                <tr key={u.id} className="hover:bg-slate-50/60">
+                <tr key={u.id} className={`hover:bg-slate-50/60 ${u.is_suspended ? "bg-red-50/30" : ""}`}>
                   <td className="px-4 py-3">
                     <p className="font-medium text-slate-900">{u.full_name || "—"}</p>
                     <p className="text-xs text-slate-500">{u.email}</p>
@@ -183,37 +225,64 @@ function UsersTab() {
                     <select
                       value={u.role || "tenant"}
                       onChange={(e) => handleRoleChange(u.id, e.target.value)}
-                      disabled={busyId === u.id}
+                      disabled={busyId === u.id || u.is_suspended}
                       className="h-8 px-2 text-xs bg-white border border-slate-200 rounded-md outline-none capitalize"
                     >
                       {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
                     </select>
                   </td>
                   <td className="px-4 py-3">
-                    {u.is_verified ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">
-                        <CheckCircle2 size={14} /> Verified
-                      </span>
-                    ) : (
-                      <span className="text-xs text-slate-500">Unverified</span>
-                    )}
+                    <div className="flex flex-col gap-1">
+                      {u.is_verified ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">
+                          <CheckCircle2 size={14} /> Verified
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-500">Unverified</span>
+                      )}
+                      {u.is_suspended && (
+                        <span
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-red-700"
+                          title={u.suspension_reason || "No reason recorded"}
+                        >
+                          <Ban size={12} /> Suspended
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-500">
                     {u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => toggleVerified(u)}
-                      disabled={busyId === u.id}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border transition ${
-                        u.is_verified
-                          ? "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                          : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
-                      }`}
-                    >
-                      {u.is_verified ? <ShieldOff size={12} /> : <ShieldCheck size={12} />}
-                      {u.is_verified ? "Revoke" : "Verify"}
-                    </button>
+                    <div className="inline-flex items-center gap-1.5">
+                      <button
+                        onClick={() => toggleVerified(u)}
+                        disabled={busyId === u.id}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border transition ${
+                          u.is_verified
+                            ? "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                            : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                        }`}
+                      >
+                        {u.is_verified ? <ShieldOff size={12} /> : <ShieldCheck size={12} />}
+                        {u.is_verified ? "Revoke" : "Verify"}
+                      </button>
+                      <button
+                        onClick={() => toggleSuspended(u)}
+                        disabled={busyId === u.id}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border transition ${
+                          u.is_suspended
+                            ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                            : "bg-red-50 border-red-200 text-red-700 hover:bg-red-100"
+                        }`}
+                        title={u.is_suspended
+                          ? `Lift suspension${u.suspension_reason ? ` (was: ${u.suspension_reason})` : ""}`
+                          : "Suspend user"}
+                      >
+                        {u.is_suspended ? <RotateCcw size={12} /> : <Ban size={12} />}
+                        {u.is_suspended ? "Unsuspend" : "Suspend"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -391,6 +460,7 @@ function ApplicationsTab() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState(null);
 
   const load = async () => {
     setLoading(true); setError("");
@@ -399,6 +469,32 @@ function ApplicationsTab() {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-line */ }, [status]);
+
+  const handleApprove = async (a) => {
+    if (!window.confirm(`Approve application from ${a.first_name || a.email || a.id}?`)) return;
+    setBusyId(a.id); setError("");
+    try {
+      await approveApplication(a.id);
+      setItems((prev) => prev.map((x) => x.id === a.id ? { ...x, status: "approved" } : x));
+    } catch (e) {
+      setError(e?.message || "Failed to approve");
+    } finally { setBusyId(null); }
+  };
+
+  const handleReject = async (a) => {
+    const reason = window.prompt(
+      `Reject application from ${a.first_name || a.email || a.id}?\n\nOptionally add a reason (recorded in the audit log):`,
+      ""
+    );
+    if (reason === null) return;
+    setBusyId(a.id); setError("");
+    try {
+      await rejectApplication(a.id, reason);
+      setItems((prev) => prev.map((x) => x.id === a.id ? { ...x, status: "rejected" } : x));
+    } catch (e) {
+      setError(e?.message || "Failed to reject");
+    } finally { setBusyId(null); }
+  };
 
   return (
     <div className="space-y-4">
@@ -436,27 +532,58 @@ function ApplicationsTab() {
                 <th className="text-left font-semibold px-4 py-3">Email</th>
                 <th className="text-left font-semibold px-4 py-3">Status</th>
                 <th className="text-left font-semibold px-4 py-3">Submitted</th>
+                <th className="text-right font-semibold px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading && (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
               )}
               {!loading && items.length === 0 && (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">No applications.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No applications.</td></tr>
               )}
-              {items.map((a) => (
-                <tr key={a.id} className="hover:bg-slate-50/60">
-                  <td className="px-4 py-3 font-medium text-slate-900">
-                    {[a.first_name, a.last_name].filter(Boolean).join(" ") || "—"}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{a.email || "—"}</td>
-                  <td className="px-4 py-3"><StatusPill status={a.status} /></td>
-                  <td className="px-4 py-3 text-xs text-slate-500">
-                    {a.submitted_at ? new Date(a.submitted_at).toLocaleString() : "—"}
-                  </td>
-                </tr>
-              ))}
+              {items.map((a) => {
+                const isPending = a.status === "pending";
+                const busy = busyId === a.id;
+                return (
+                  <tr key={a.id} className="hover:bg-slate-50/60">
+                    <td className="px-4 py-3 font-medium text-slate-900">
+                      {[a.first_name, a.last_name].filter(Boolean).join(" ") || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">{a.email || "—"}</td>
+                    <td className="px-4 py-3"><StatusPill status={a.status} /></td>
+                    <td className="px-4 py-3 text-xs text-slate-500">
+                      {a.submitted_at ? new Date(a.submitted_at).toLocaleString() : "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-2">
+                        {isPending ? (
+                          <>
+                            <button
+                              onClick={() => handleApprove(a)}
+                              disabled={busy}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-green-50 text-green-700 border border-green-200 text-xs font-semibold hover:bg-green-100 disabled:opacity-50"
+                              title="Approve"
+                            >
+                              <Check size={13} /> Approve
+                            </button>
+                            <button
+                              onClick={() => handleReject(a)}
+                              disabled={busy}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-red-50 text-red-700 border border-red-200 text-xs font-semibold hover:bg-red-100 disabled:opacity-50"
+                              title="Reject"
+                            >
+                              <X size={13} /> Reject
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-400">—</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
